@@ -258,6 +258,7 @@ function collectFeedback(c, pre, mergedBase) {
     parts.push(TEXT.fb.unreadable)
   }
   if (mergedBase) parts.push(TEXT.fb.merged(config.base))
+  if (c.conflict) parts.unshift(TEXT.fb.conflict(config.base, c.conflict.files))
   return parts.join("\n\n")
 }
 
@@ -268,6 +269,31 @@ function collectFeedback(c, pre, mergedBase) {
 function dropStoredCredentials(git) {
   const keys = git.try(["config", "--local", "--name-only", "--get-regexp", "^(http\\..*extraheader|includeif\\..*\\.path)$"])
   for (const key of keys.stdout.split("\n").filter(Boolean)) git.try(["config", "--local", "--unset-all", key])
+}
+
+// A conflicted merge the agent was asked to resolve. -> a reason when it is not resolved,
+// "" when it is. Two ways to get it wrong are caught: conflict markers left in a file, and a
+// base change thrown away (the agent ran `git merge --abort` or checked a file out from the
+// PR side), which would turn the merge commit into a silent revert of the base branch.
+function unresolved(c, baseSha) {
+  const { git, config } = c
+  const G = (args) => git.git(args)
+  const marked = c.conflict.files.filter((f) => /^(<{7}|>{7}|={7})( |$)/m.test(git.try(["show", `:${f}`]).stdout))
+  if (marked.length) return TEXT.conflictMarkers(marked)
+  const ours = new Set(names(G(["diff", "--name-only", "--no-renames", "-z", c.conflict.mergeBase, c.sha])))
+  const theirs = names(G(["diff", "--name-only", "--no-renames", "-z", c.conflict.mergeBase, baseSha])).filter((f) => !ours.has(f))
+  const lost = theirs.filter((f) => git.try(["diff", "--cached", "--quiet", baseSha, "--", f]).rc !== 0)
+  if (lost.length) return TEXT.conflictLost(config.base, lost)
+  return ""
+}
+
+// The resolved tree, committed with two parents (the PR head and the base), so the pull
+// request contains the base and GitHub sees no conflict any more.
+function commitMerge(c, baseSha, message) {
+  const G = (args, opts) => c.git.git(args, opts)
+  const tree = G(["write-tree"]).trim()
+  const commit = G(["commit-tree", tree, "-p", c.start, "-p", baseSha, "-F", "-"], { input: message }).trim()
+  G(["update-ref", "HEAD", commit])
 }
 
 // After the claim. -> { outcome, reason, detail?, pr?, usage?, skip? }. `c.start` is set once
@@ -299,16 +325,21 @@ async function work(c, pre) {
     c.start = c.sha
     if (git.try(["merge-base", baseSha, "HEAD"]).rc !== 0) return failed(TEXT.noMergeBase(c.prNo, base))
     // Bring the base branch in first, so the rework is checked against today's code and the
-    // pull request can merge afterwards. A conflict is not for the agent to resolve in 0.1.
+    // pull request can merge afterwards. A conflict is left in the working tree for the agent
+    // to resolve; the role then records the result as a real merge commit (see commitMerge).
     if (git.try(["merge-base", "--is-ancestor", baseSha, "HEAD"]).rc !== 0) {
       const m = git.try([...NO_HOOKS, "merge", "-q", "--no-ff", "--no-verify", "-m", TEXT.mergeTitle(base, branch), baseSha])
       if (m.rc !== 0) {
         const files = names(git.try(["diff", "--name-only", "--diff-filter=U", "-z"]).stdout)
-        git.try(["merge", "--abort"])
-        return { outcome: "conflict", reason: TEXT.conflict(base, files) }
+        if (!files.length) {
+          git.try(["merge", "--abort"])
+          return failed(TEXT.mergeFailed(base), tail(m))
+        }
+        c.conflict = { files, mergeBase: G(["merge-base", c.sha, baseSha]).trim() }
+      } else {
+        mergedBase = true
+        c.start = G(["rev-parse", "HEAD"]).trim()
       }
-      mergedBase = true
-      c.start = G(["rev-parse", "HEAD"]).trim()
     }
   } else {
     branch = branchFor({ prefix: config.branch_prefix, issue: n, row: c.row, title: issue.title })
@@ -358,8 +389,19 @@ async function work(c, pre) {
   // the index, and what counts is the tree compared with the base branch.
   const scratch = (io.claude.scratch || []).map((p) => `:(exclude)${p}`)
   const stage = () => G(["add", "-A", "--", ".", ...scratch])
+  // An unfinished merge blocks the reset; `merge --quit` drops git's merge state and keeps the
+  // files as the agent left them. The merge itself is recorded by commitMerge.
+  // Staging first clears the index's unmerged entries, which also block a soft reset.
+  if (c.conflict) {
+    git.try(["merge", "--quit"])
+    stage()
+  }
   G(["reset", "-q", "--soft", c.start])
   stage()
+  if (c.conflict) {
+    const left = unresolved(c, baseSha)
+    if (left) return { outcome: "conflict", reason: left }
+  }
   const touched = names(G(["diff", "--cached", "--name-only", "--no-renames", "-z", baseSha]))
   const thisRound = names(G(["diff", "--cached", "--name-only", "--no-renames", "-z", c.start]))
   if (!thisRound.length && !pr) return failed(TEXT.noChanges)
@@ -382,7 +424,8 @@ async function work(c, pre) {
   const message = [subject, "", pr ? `${ref} (PR #${c.prNo})` : ref, "", stripMarks(out.summary), "", TEXT.commitNote, ""].join("\n")
   // A rework that changed no code still gets a commit: the pull request needs a new head for
   // the checks and the reviewer to look at the rewritten description.
-  G([...NO_HOOKS, "commit", "-q", "--no-verify", ...(pr ? ["--allow-empty"] : []), "-F", "-"], { input: message })
+  if (c.conflict) commitMerge(c, baseSha, message)
+  else G([...NO_HOOKS, "commit", "-q", "--no-verify", ...(pr ? ["--allow-empty"] : []), "-F", "-"], { input: message })
   const files = names(G(["diff", "--name-only", "--no-renames", "-z", baseSha, "HEAD"]))
   hits = forbiddenHits(config.risk, files)
   if (hits.length) return { outcome: "forbidden", reason: TEXT.forbidden(hits) }

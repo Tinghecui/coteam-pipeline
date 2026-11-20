@@ -211,7 +211,7 @@ An answer is a comment on the decision item starting with an option letter (`A`,
 ## Not in 0.1
 
 Red-check, responder and rule learning, follow-up digest, acceptance on preview URLs,
-project boards, a second reviewer model, conflict auto-merge, other languages.
+project boards, a second reviewer model, conflict auto-merge without the agent (a rework with a conflict leaves it to the agent and records a real merge commit), other languages.
 
 Isolation of the agent from the bot's credentials. In 0.1 the agent runs in the same job
 and as the same OS user as the engine, which holds the App's private key; on GitHub-hosted

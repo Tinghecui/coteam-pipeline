@@ -560,6 +560,9 @@ export const FIX_TEXT = {
   // failures
   noMergeBase: (pr, base) => `cannot find where PR #${pr} left ${base} (is the checkout's history too shallow?)`,
   conflict: (base, files) => `${base} could not be merged into the PR branch; conflicts in: ${files.join(", ") || "(unknown)"}`,
+  mergeFailed: (base) => `merging ${base} into the PR branch failed without a conflict to resolve`,
+  conflictMarkers: (files) => `the merge conflict was not resolved: conflict markers are still in ${files.join(", ")}`,
+  conflictLost: (base, files) => `the merge would throw away changes from ${base} in ${files.join(", ")}; nothing was pushed`,
   setupFailed: (line) => `setup command failed: ${line}`,
   unavailable: (reason) => `the agent cannot be used right now (${reason})`,
   noOutput: (rc, note) => `the agent gave no structured result (exit code ${rc}${note ? `; ${note}` : ""})`,
@@ -600,5 +603,7 @@ export const FIX_TEXT = {
     noFailed: "## Checks\n\nNo failed check on this head.",
     unreadable: "## Checks\n\nThe checks of this head could not be read.",
     merged: (base) => `## Base branch\n\n${base} was merged into this branch before you started, so the diff against ${base} is the whole pull request.`,
+    conflict: (base, files) =>
+      `## Merge conflict with ${base} (resolve this first)\n\n${base} was merged into this branch and the merge stopped with conflicts in: ${files.join(", ")}. Those files contain conflict markers. Resolve every one, keeping what both sides meant (in a list such as a changelog that usually means keeping both entries), and make sure the tests still pass. Leave the result in the working tree: do not run \`git merge --abort\`, \`git commit\`, \`git reset\` or \`git checkout\` on these files; the scripts record the merge. Then deal with the rest of the feedback below, if any.`,
   },
 }

@@ -259,30 +259,54 @@ test("rework: base merged in, new commit on the PR branch, description rewritten
   assert.equal(w.marks("claim", 5)[0].released, true)
 })
 
-test("rework: a conflict with the base is the outcome 'conflict' and the agent is not started", async () => {
+test("rework: a conflict with the base is left for the agent; the resolved result is pushed as a real merge commit", async () => {
   const w = world()
   const sha = withPr(w)
   put(w.work, "src/list.js", "export const list = []\n")
+  put(w.work, "README.md", "# demo\n\nfrom main\n")
   sh(w.work, "commit", "-q", "-am", "other change")
   sh(w.work, "push", "-q", "origin", "HEAD:main")
+  const mainSha = sh(w.work, "rev-parse", "HEAD")
+  let seen = ""
+  w.agent = (cwd) => {
+    seen = readFileSync(join(cwd, "src/list.js"), "utf8")
+    put(cwd, "src/list.js", "export const list = [1, 2, 3]\n")
+  }
 
   const res = await run({ pr: 50 }, w.io)
-  assert.equal(res.outcome, "conflict")
-  assert.equal(res.ok, false)
-  assert.equal(res.issue, 5)
-  assert.match(res.reason, /conflicts in: src\/list\.js/)
-  assert.equal(w.prompts.length, 0)
-  assert.equal(sh(w.root, "--git-dir", w.remote, "rev-parse", w.prs[50].head.ref), sha)
-  const m = w.marks("rework", 50)
-  assert.deepEqual([m[0].failed, m[0].why, m[0].sha], [true, "conflict", sha])
-  assert.deepEqual(w.entries.map((e) => [e.outcome, e.turns]), [["conflict", 0]])
-  assert.equal(w.marks("claim", 5)[0].released, true)
+  assert.equal(res.outcome, "rework", JSON.stringify(res))
+  assert.match(seen, /^<{7} /m)
+  assert.match(w.prompts[0].prompt, /Merge conflict with main \(resolve this first\)[\s\S]*conflicts in: src\/list\.js/)
+  const git = (...a) => sh(w.root, "--git-dir", w.remote, ...a)
+  const head = git("rev-parse", w.prs[50].head.ref)
+  assert.deepEqual(git("rev-list", "--parents", "-n", "1", head).split(" ").slice(1), [sha, mainSha])
+  assert.equal(git("show", `${head}:src/list.js`), "export const list = [1, 2, 3]")
+  // the base's other change survived the merge
+  assert.match(git("show", `${head}:README.md`), /from main/)
+})
 
-  // the same head is not taken again: the refusal is written on the PR for the tick
-  const again = await run({ pr: 50 }, w.io)
-  assert.deepEqual([again.outcome, again.why, again.permanent], ["skipped", "head_reworked", true])
-  assert.equal(w.marks("skip", 50).length, 1)
-  assert.equal(w.entries.length, 1)
+test("rework: conflict markers left behind, or a base change thrown away, is the outcome 'conflict' and nothing is pushed", async () => {
+  for (const [label, agent, why] of [
+    ["markers", () => {}, /conflict markers are still in src\/list\.js/],
+    ["revert", (cwd) => {
+      put(cwd, "src/list.js", "export const list = [1, 2, 3]\n")
+      put(cwd, "README.md", "# demo\n")
+    }, /throw away changes from main in README\.md/],
+  ]) {
+    const w = world()
+    const sha = withPr(w)
+    put(w.work, "src/list.js", "export const list = []\n")
+    put(w.work, "README.md", "# demo\n\nfrom main\n")
+    sh(w.work, "commit", "-q", "-am", "other change")
+    sh(w.work, "push", "-q", "origin", "HEAD:main")
+    w.agent = agent
+    const res = await run({ pr: 50 }, w.io)
+    assert.equal(res.outcome, "conflict", label)
+    assert.match(res.reason, why, label)
+    assert.equal(sh(w.root, "--git-dir", w.remote, "rev-parse", w.prs[50].head.ref), sha, label)
+    const m = w.marks("rework", 50)
+    assert.deepEqual([m[0].failed, m[0].why], [true, "conflict"], label)
+  }
 })
 
 test("rework is refused at the limit, and the PR says so once", async () => {

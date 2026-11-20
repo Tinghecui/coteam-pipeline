@@ -271,6 +271,8 @@ test("rework: a conflict with the base is left for the agent; the resolved resul
   w.agent = (cwd) => {
     seen = readFileSync(join(cwd, "src/list.js"), "utf8")
     put(cwd, "src/list.js", "export const list = [1, 2, 3]\n")
+    // a file only main changed, edited further to fit the PR: allowed
+    put(cwd, "README.md", "# demo\n\nfrom main\n\nand the PR\n")
   }
 
   const res = await run({ pr: 50 }, w.io)
@@ -282,7 +284,7 @@ test("rework: a conflict with the base is left for the agent; the resolved resul
   assert.deepEqual(git("rev-list", "--parents", "-n", "1", head).split(" ").slice(1), [sha, mainSha])
   assert.equal(git("show", `${head}:src/list.js`), "export const list = [1, 2, 3]")
   // the base's other change survived the merge
-  assert.match(git("show", `${head}:README.md`), /from main/)
+  assert.match(git("show", `${head}:README.md`), /from main\n\nand the PR/)
 })
 
 test("rework: conflict markers left behind, or a base change thrown away, is the outcome 'conflict' and nothing is pushed", async () => {

@@ -274,7 +274,9 @@ function dropStoredCredentials(git) {
 // A conflicted merge the agent was asked to resolve. -> a reason when it is not resolved,
 // "" when it is. Two ways to get it wrong are caught: conflict markers left in a file, and a
 // base change thrown away (the agent ran `git merge --abort` or checked a file out from the
-// PR side), which would turn the merge commit into a silent revert of the base branch.
+// PR side), which would turn the merge commit into a silent revert of the base branch. A file
+// only the base changed may still be edited further (a base test that has to follow the PR's
+// change); it is lost only when it is back to what it was before the base changed it.
 function unresolved(c, baseSha) {
   const { git, config } = c
   const G = (args) => git.git(args)
@@ -282,7 +284,7 @@ function unresolved(c, baseSha) {
   if (marked.length) return TEXT.conflictMarkers(marked)
   const ours = new Set(names(G(["diff", "--name-only", "--no-renames", "-z", c.conflict.mergeBase, c.sha])))
   const theirs = names(G(["diff", "--name-only", "--no-renames", "-z", c.conflict.mergeBase, baseSha])).filter((f) => !ours.has(f))
-  const lost = theirs.filter((f) => git.try(["diff", "--cached", "--quiet", baseSha, "--", f]).rc !== 0)
+  const lost = theirs.filter((f) => git.try(["diff", "--cached", "--quiet", c.conflict.mergeBase, "--", f]).rc === 0)
   if (lost.length) return TEXT.conflictLost(config.base, lost)
   return ""
 }

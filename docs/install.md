@@ -1,8 +1,8 @@
 # Installing the pipeline by hand
 
-> **Status: 0.1 is in development.** There is no `v0.1.0` release yet. The engine has run
-> end to end on one small demonstration repository; these steps were followed once, for
-> that repository. Expect corrections.
+> **Status: `v0.1.0` is the first release, and it is young.** The engine has run end to
+> end on a small demonstration repository, and the installer once from an empty start.
+> Expect corrections.
 
 **The quick way** is the installer skill for Claude Code, which does everything below for
 you and asks where a person has to decide. In a checkout of your repository:

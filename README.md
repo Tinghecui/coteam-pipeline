@@ -13,20 +13,22 @@ project see nothing of your code or credentials.
 
 ## Status
 
-**0.1 is in development. There is no release tag yet.**
+**The first release is `v0.1.0`. It is young.**
 
-The engine (`cli/`), the reusable workflows and the templates have run end to end on one
+The engine (`cli/`), the reusable workflows and the templates have run end to end on a
 small public demonstration repository, with the real Claude Code CLI and the real GitHub
 API: direct merges at levels 0 and 1, a level-2 question that took its default, a level-3
 draft released by an owner, a spec issue of several rows, reworks (including merge
 conflicts with the base branch), work the executor refused, and the daily spending limit.
-The test suite drives the same roles against an in-memory GitHub, a scripted agent and
-local git repositories.
+The installer below has been run once from an empty start: plugin, questions, files, the
+GitHub App, the installation pull request, the doctor, and a first issue through to an
+approved pull request. The test suite drives the same roles against an in-memory GitHub, a
+scripted agent and local git repositories.
 
-What has not been verified: the installer skill below has not yet been run by a person in
-a real Claude Code session (its commands are tested, its conversation is not); answers by
-people who are not owners and an unavailable model have only been simulated; nobody has
-tried to attack it. Expect things to break on first contact with a real codebase.
+What has not been verified: a codebase of real size, or any stack but a small Node
+project; a repository owned by an organisation; answers by people who are not owners and
+an unavailable model (both only simulated). Nobody has tried to attack it. Expect things
+to break on first contact with a real codebase, and please open an issue when they do.
 
 ## Install
 

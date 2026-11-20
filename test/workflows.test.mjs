@@ -368,8 +368,8 @@ test("npm test runs every test file", () => {
 test("the README is in English, says what has not been verified and how to install, and its links exist", () => {
   const readme = readFileSync(join(ROOT, "README.md"), "utf8")
   assert.ok(!/[㐀-鿿]/.test(readme), "written for outside readers")
-  assert.match(readme, /There is no release tag yet/)
-  assert.match(readme, /What has not been verified: the installer skill below has not yet been run by a person/)
+  assert.match(readme, /The first release is `v0\.1\.0`/)
+  assert.match(readme, /What has not been verified: a codebase of real size/)
   assert.match(readme, /\/plugin install coteam-pipeline@coteam-pipeline\n\/coteam-pipeline:init/)
   const links = [...readme.matchAll(/\]\(([^)#]+)(?:#[^)]*)?\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l))
   for (const want of ["docs/install.md", "docs/spec-format.md", "docs/design-0.1.md", "LICENSE"]) assert.ok(links.includes(want), want)

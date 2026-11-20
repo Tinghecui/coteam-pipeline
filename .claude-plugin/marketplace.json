@@ -1,0 +1,14 @@
+{
+  "name": "coteam-pipeline",
+  "description": "coteam-pipeline: an issue-to-merge pipeline run by coding agents in your own GitHub Actions.",
+  "owner": {
+    "name": "CoTeam"
+  },
+  "plugins": [
+    {
+      "name": "coteam-pipeline",
+      "source": "./",
+      "description": "Install coteam-pipeline in a repository: an issue-to-merge pipeline run by coding agents in your own GitHub Actions, with your own keys."
+    }
+  ]
+}

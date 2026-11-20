@@ -13,13 +13,39 @@ project see nothing of your code or credentials.
 
 ## Status
 
-**0.1 is in development and has not yet been run on a real repository.**
+**0.1 is in development. There is no release tag yet.**
 
-What exists is the engine (`cli/`), the reusable workflows, the templates and the documents
-below, with a test suite that drives the three roles against an in-memory GitHub, a
-scripted agent and local git repositories. No run with the real Claude Code CLI and no run
-against the real GitHub API has happened yet. Expect things to break on first contact;
-there is no release tag to install.
+The engine (`cli/`), the reusable workflows and the templates have run end to end on one
+small public demonstration repository, with the real Claude Code CLI and the real GitHub
+API: direct merges at levels 0 and 1, a level-2 question that took its default, a level-3
+draft released by an owner, a spec issue of several rows, reworks (including merge
+conflicts with the base branch), work the executor refused, and the daily spending limit.
+The test suite drives the same roles against an in-memory GitHub, a scripted agent and
+local git repositories.
+
+What has not been verified: the installer skill below has not yet been run by a person in
+a real Claude Code session (its commands are tested, its conversation is not); answers by
+people who are not owners and an unavailable model have only been simulated; nobody has
+tried to attack it. Expect things to break on first contact with a real codebase.
+
+## Install
+
+With [Claude Code](https://claude.com/claude-code), in a checkout of your repository:
+
+```text
+/plugin marketplace add Tinghecui/coteam-pipeline
+/plugin install coteam-pipeline@coteam-pipeline
+/coteam-pipeline:init
+```
+
+The skill reads your codebase, asks a few questions (who decides, which paths are risky,
+how much may be spent per day), writes the config and three workflow files, creates the
+GitHub App that acts as the bot (you press two buttons in your browser; its key goes
+straight into your repository's secrets), and opens one pull request for you to merge. It
+ends in `record` mode: the pipeline opens and reviews pull requests but merges nothing
+until you switch it on.
+
+The same installation by hand is in [docs/install.md](docs/install.md).
 
 ## Who it is for
 

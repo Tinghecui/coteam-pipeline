@@ -8,6 +8,8 @@
 //                                               --fix creates the labels that are missing)
 //   app-token <app-id> <owner/repo> [--login]   PEM on stdin -> an installation token on stdout
 //                                               (--login: and on a second line the app's login, "<slug>[bot]")
+//   init <scan | files | check | app>           the installer's steps, run on a person's machine by the
+//                                               Claude Code skill in skills/init (cli/roles/init.mjs)
 // Exit code: 0 = done (including "nothing to do"), 1 = failed.
 //
 // Every module of the engine is imported here, statically, before anything runs. The agent
@@ -26,6 +28,7 @@ import { appLogin, mintAppToken } from "./io/app-token.mjs"
 import { makeIo } from "./io/real.mjs"
 import * as doctorRole from "./roles/doctor.mjs"
 import * as fixRole from "./roles/fix.mjs"
+import * as initRole from "./roles/init.mjs"
 import * as reviewRole from "./roles/review.mjs"
 import * as tickRole from "./roles/tick.mjs"
 
@@ -40,6 +43,7 @@ export const TEXT = {
     "  spec check <file | - | issue number>",
     "  doctor [--fix]",
     "  app-token <app-id> <owner/repo> [--login]   (PEM on stdin)",
+    "  init <scan | files | check | app>           (the installer's steps; `init` alone lists them)",
   ].join("\n"),
   unknown: (cmd) => `unknown command: ${cmd}`,
   notNumber: (flag, v) => `--${flag} must be a number, got "${v}"`,
@@ -192,6 +196,30 @@ async function appToken([appId, repo], { env, out, err, stdin }, { login = false
   return 0
 }
 
+// The installer's steps. They run as the person at the keyboard, with their own `gh` login:
+// no bot token, no config from the base branch, no agent.
+async function init([step], flags, { cwd, out }) {
+  const deps = { log: out }
+  const list = (v) => (typeof v === "string" ? v.split(",") : [])
+  const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : undefined)
+  switch (step) {
+    case "scan":
+      out(JSON.stringify(initRole.scan({ cwd }, deps), null, 2))
+      return 0
+    case "files":
+      initRole.files({ cwd, ref: text(flags.ref), ci: list(flags.ci), base: text(flags.base), force: bool(flags, "force") }, deps)
+      return 0
+    case "check":
+      return initRole.check({ cwd }, deps).ok ? 0 : 1
+    case "app": {
+      const res = await initRole.app({ cwd, repo: text(flags.repo), name: text(flags.name), noOpen: bool(flags, "no-open"), force: bool(flags, "force"), timeoutMinutes: num(flags, "timeout") }, deps)
+      return res.ok ? 0 : 1
+    }
+    default:
+      throw new Error(initRole.TEXT.usage)
+  }
+}
+
 const readStdin = async () => {
   const chunks = []
   for await (const c of process.stdin) chunks.push(c)
@@ -231,6 +259,8 @@ export async function main(argv, ctx = {}) {
         return await doctor({ fix: bool(flags, "fix") }, io)
       case "app-token":
         return await appToken(rest, io, { login: bool(flags, "login") })
+      case "init":
+        return await init(rest, flags, io)
       case undefined:
       case "help":
         out(TEXT.usage)

@@ -365,11 +365,12 @@ test("npm test runs every test file", () => {
   assert.match(readFileSync(join(ROOT, "LICENSE"), "utf8"), /^MIT License/)
 })
 
-test("the README is in English, says what has not been verified, and its links exist", () => {
+test("the README is in English, says what has not been verified and how to install, and its links exist", () => {
   const readme = readFileSync(join(ROOT, "README.md"), "utf8")
   assert.ok(!/[㐀-鿿]/.test(readme), "written for outside readers")
-  assert.match(readme, /has not yet been run on a real repository/)
-  assert.match(readme, /No run with the real Claude Code CLI and no run\s+against the real GitHub API has happened yet/)
+  assert.match(readme, /There is no release tag yet/)
+  assert.match(readme, /What has not been verified: the installer skill below has not yet been run by a person/)
+  assert.match(readme, /\/plugin install coteam-pipeline@coteam-pipeline\n\/coteam-pipeline:init/)
   const links = [...readme.matchAll(/\]\(([^)#]+)(?:#[^)]*)?\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l))
   for (const want of ["docs/install.md", "docs/spec-format.md", "docs/design-0.1.md", "LICENSE"]) assert.ok(links.includes(want), want)
   for (const l of links) assert.ok(existsSync(join(ROOT, l)), `${l} does not exist`)

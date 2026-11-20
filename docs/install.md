@@ -1,13 +1,28 @@
 # Installing the pipeline by hand
 
-> **Status: 0.1 is in development.** These steps describe how the installation is meant
-> to work. They have not yet been carried out against a real repository, there is no
-> `v0.1.0` release yet, and the engine has so far only run against simulations of GitHub
-> and of the agent. Expect corrections.
+> **Status: 0.1 is in development.** There is no `v0.1.0` release yet. The engine has run
+> end to end on one small demonstration repository; these steps were followed once, for
+> that repository. Expect corrections.
 
-This is the installation by hand, step by step. It should take about half an hour. At the
-end the pipeline runs in **record** mode: it writes code, opens pull requests and reviews
-them, but merges nothing.
+**The quick way** is the installer skill for Claude Code, which does everything below for
+you and asks where a person has to decide. In a checkout of your repository:
+
+```text
+/plugin marketplace add Tinghecui/coteam-pipeline
+/plugin install coteam-pipeline@coteam-pipeline
+/coteam-pipeline:init
+```
+
+Its mechanical steps are commands you can also run yourself (`node cli/main.mjs init`
+lists them): `init scan` reports what it finds in a checkout, `init files` writes the
+three workflows and the starter config with the engine pinned, `init check` checks those
+files before they are merged, and `init app` creates the GitHub App of step 1 in your
+browser with the right permissions and stores its key and id (steps 1 to 3) without the
+key ever being shown or saved to a file.
+
+The rest of this page is the installation by hand, step by step. It should take about
+half an hour. At the end the pipeline runs in **record** mode: it writes code, opens pull
+requests and reviews them, but merges nothing.
 
 Everything runs in your own repository's GitHub Actions, with your own Anthropic API key and
 your own GitHub App. The engine has no server and its authors see nothing of yours.
@@ -283,7 +298,7 @@ To stop everything at once, set `mode: off`, or disable the three workflows in t
 
 ## Threat model and known gaps
 
-Read this as a statement of design, not of experience: 0.1 has not yet run on a real
+Read this as a statement of design, not of experience: 0.1 has run on one demonstration
 repository, and nobody has tried to attack it.
 
 **What is assumed.** The agent reads text that an attacker may have written: an issue, a
@@ -393,8 +408,9 @@ machine the agent has touched.
 - **English only.** Spec headings, labels, comments and prompts are English.
 - **No acceptance testing yet.** The pipeline stops at the merge. Nothing checks the
   deployed result against the acceptance criteria; that is planned for a later version.
-- **No conflict resolution.** A pull request that conflicts with the base branch is put in
-  front of an owner, not fixed by the agent.
+- **Conflicts go back to the agent.** A pull request that conflicts with the
+  base branch is sent back to the executor, which resolves the conflict in a merge commit;
+  when that does not work the pull request is put in front of an owner.
 - **One repository per installation.** Work that spans repositories is not coordinated.
 - **Cost**: model usage is billed to your Anthropic key and runner minutes to your GitHub
   plan (private repositories). The limits in the config cap the first, not the second.

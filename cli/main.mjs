@@ -17,7 +17,7 @@
 // child process that is started from a file of the engine (test/main.test.mjs checks both).
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadConfig, presetOf } from "./core/config.mjs"
 import { ALWAYS_FORBIDDEN, forbiddenHits } from "./core/policy.mjs"
@@ -156,7 +156,7 @@ async function specCheck(target, { env, cwd, out, stdin }) {
     body = io.gh.get(`issues/${target}`).body || ""
     risk = io.config.risk
   } else {
-    body = target === "-" ? await stdin() : readFileSync(join(cwd, target), "utf8")
+    body = target === "-" ? await stdin() : readFileSync(resolve(cwd, target), "utf8")
     try {
       risk = localConfig(cwd)?.risk || risk
     } catch {

@@ -1,0 +1,87 @@
+# Reusable workflow: one round of the dispatcher (`node cli/main.mjs tick`).
+#
+# This file is a shell around the command line and holds no logic of its own: everything the
+# pipeline decides is decided in cli/. Called from the user's repository by
+# templates/workflows/pipeline-tick.yml.
+#
+# Security notes for whoever edits this file:
+#   - Nothing from the event payload (titles, bodies, comments, branch names) may appear in a
+#     `run:` script. Values reach the engine through `env:` only, and the engine validates them.
+#   - The default GITHUB_TOKEN is used for one thing: the two checkouts. Every write to the
+#     user's repository is made by the engine with the bot token it mints from PIPELINE_APP_KEY.
+#   - Third-party actions: only actions/checkout and actions/setup-node, by major version tag.
+#     A user who wants them pinned by commit SHA can fork this repository and pin them there.
+name: tick
+
+on:
+  workflow_call:
+    inputs:
+      engine_ref:
+        description: "The ref of the engine to run. Pass the same ref as in `uses: ...@<ref>`: a reusable workflow cannot read its own ref."
+        type: string
+        required: true
+      engine_repository:
+        description: "The engine's repository (owner/name). Change it only when running a fork."
+        type: string
+        default: Tinghecui/coteam-pipeline
+      app_id:
+        description: "The id of the GitHub App the pipeline acts as (repository variable PIPELINE_APP_ID)."
+        type: string
+        required: true
+      bot_login:
+        description: "Optional (repository variable PIPELINE_BOT). The engine works out the login the App writes as by itself; logins given here, separated by commas, are trusted as authors of marks in addition to it."
+        type: string
+        default: ""
+      dry:
+        description: "Print the plan and change nothing."
+        type: boolean
+        default: false
+    secrets:
+      PIPELINE_APP_KEY:
+        description: "The private key (PEM) of the GitHub App."
+        required: true
+
+# Read the two checkouts, nothing else. The caller must grant at least this much.
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    # The dispatcher is the one pipeline job that pull request events start, so its check run
+    # ("<caller job> / pipeline-tick") does sit on pull request heads. The name is fixed so
+    # that it can be told apart from the repository's own CI; do not rename it.
+    name: pipeline-tick
+    runs-on: ubuntu-latest
+    # A fixed ceiling. A round is a few dozen API calls; it never runs the agent.
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # Always the default branch, also when a pull request event started the round: the
+          # dispatcher never needs a pull request's code. The engine fetches the config and
+          # the ledger itself, so one commit is enough.
+          ref: ${{ github.event.repository.default_branch || '' }}
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.engine_repository }}
+          ref: ${{ inputs.engine_ref }}
+          path: engine
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run the dispatcher
+        working-directory: repo
+        env:
+          PIPELINE_APP_ID: ${{ inputs.app_id }}
+          PIPELINE_APP_KEY: ${{ secrets.PIPELINE_APP_KEY }}
+          PIPELINE_BOT: ${{ inputs.bot_login }}
+          DRY: ${{ inputs.dry }}
+        run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" tick --dry="$DRY"

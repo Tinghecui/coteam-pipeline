@@ -1,0 +1,118 @@
+# Reusable workflow: the executor (`node cli/main.mjs fix`). It works on one issue, one row
+# of a spec issue, or reworks one pull request, and opens or updates the pull request.
+#
+# This file is a shell around the command line and holds no logic of its own. Called from
+# the user's repository by templates/workflows/pipeline-fix.yml, which only the dispatcher
+# (or a person with write access) starts through workflow_dispatch.
+#
+# Security notes for whoever edits this file:
+#   - Nothing from the event payload may appear in a `run:` script. The numbers below reach
+#     the engine through `env:` and the engine refuses anything that is not a whole number.
+#   - The agent is started by the engine, which removes every token from the agent's
+#     environment first. Do not add steps that put a token on disk or in git's config
+#     (`persist-credentials: false` is part of that), and do not add deploy or cloud
+#     credentials to this job.
+#   - The default GITHUB_TOKEN is used for one thing: the two checkouts.
+#   - Third-party actions: only actions/checkout and actions/setup-node, by major version tag.
+#     A user who wants them pinned by commit SHA can fork this repository and pin them there.
+name: fix
+
+on:
+  workflow_call:
+    inputs:
+      engine_ref:
+        description: "The ref of the engine to run. Pass the same ref as in `uses: ...@<ref>`: a reusable workflow cannot read its own ref."
+        type: string
+        required: true
+      engine_repository:
+        description: "The engine's repository (owner/name). Change it only when running a fork."
+        type: string
+        default: Tinghecui/coteam-pipeline
+      app_id:
+        description: "The id of the GitHub App the pipeline acts as (repository variable PIPELINE_APP_ID)."
+        type: string
+        required: true
+      bot_login:
+        description: "Optional (repository variable PIPELINE_BOT). The engine works out the login the App writes as by itself; logins given here, separated by commas, are trusted as authors of marks in addition to it."
+        type: string
+        default: ""
+      claude_code_version:
+        description: "The exact version of the Claude Code CLI (@anthropic-ai/claude-code) to install. Pinned: the engine is tested against this one."
+        type: string
+        default: "2.1.302"
+      issue:
+        description: "Issue number."
+        type: string
+        default: ""
+      row:
+        description: "Row of the issue's PR split table (spec issues only)."
+        type: string
+        default: ""
+      pr:
+        description: "Pull request to rework (empty: start new work)."
+        type: string
+        default: ""
+      dry:
+        description: "Go through the steps without pushing, commenting or opening a pull request."
+        type: boolean
+        default: false
+    secrets:
+      PIPELINE_APP_KEY:
+        description: "The private key (PEM) of the GitHub App."
+        required: true
+      ANTHROPIC_API_KEY:
+        description: "The team's own Anthropic API key. The only credential the agent is given."
+        required: true
+
+# Read the two checkouts, nothing else. Pushing and opening the pull request are done by the
+# engine with the bot token, so that the pull request starts the repository's CI (a pull
+# request opened with GITHUB_TOKEN does not).
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    # Started by workflow_dispatch on the base branch, so its check run sits on a commit of
+    # the base branch and never on a pull request's head.
+    name: pipeline-fix
+    runs-on: ubuntu-latest
+    # A fixed ceiling, not the working limit: the engine stops the agent after
+    # limits.executor_minutes (default 120) and each setup or check command after 30 minutes.
+    timeout-minutes: 300
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # One commit is enough: the engine fetches the base branch (and, for a rework, the
+          # pull request's branch) itself with the bot token, 500 commits deep.
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.engine_repository }}
+          ref: ${{ inputs.engine_ref }}
+          path: engine
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the Claude Code CLI
+        env:
+          CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
+        run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+      - name: Run the executor
+        working-directory: repo
+        env:
+          PIPELINE_APP_ID: ${{ inputs.app_id }}
+          PIPELINE_APP_KEY: ${{ secrets.PIPELINE_APP_KEY }}
+          PIPELINE_BOT: ${{ inputs.bot_login }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE: ${{ inputs.issue }}
+          ROW: ${{ inputs.row }}
+          PR: ${{ inputs.pr }}
+          DRY: ${{ inputs.dry }}
+        run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" fix --issue="$ISSUE" --row="$ROW" --pr="$PR" --dry="$DRY"

@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "level", "problems", "followups", "summary"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "reject", "needs_human"],
+      "description": "approve = can be merged; reject = this pull request brings in a problem of one of the four kinds (listed in problems); needs_human = you cannot tell, a person has to look"
+    },
+    "level": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "description": "Risk of the change itself: 0 = fix, tests, docs, refactor without behaviour change; 1 = visible UI change; 2 = a product trade-off the spec did not decide; 3 = auth, data migration, payments, secrets"
+    },
+    "problems": {
+      "type": "array",
+      "description": "What blocks the merge, all of it in one pass, one entry each. Empty unless the verdict is reject",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "where", "what"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["logic", "criteria", "security", "tests_missing"],
+            "description": "logic = logic that will go wrong; criteria = an acceptance criterion (or a decision / the scope of the spec) not met; security = a security problem; tests_missing = behaviour changed and no test was added or changed"
+          },
+          "where": { "type": "string", "description": "File and line in the merged code (path/to/file:123), or \"PR description\"" },
+          "what": { "type": "string", "description": "What is wrong and what it causes, one or two sentences" }
+        }
+      }
+    },
+    "followups": {
+      "type": "array",
+      "description": "Things that do not block the merge but somebody should act on afterwards, one entry each; empty list if none",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "what"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["test", "existing", "summary", "evidence", "other"],
+            "description": "test = tests exist but do not test what they claim; existing = a defect that was there before this pull request, or the same flaw next door; summary = the plain-language summary does not match the diff; evidence = the evidence is incomplete or does not match; other = documentation, naming, anything else"
+          },
+          "what": { "type": "string", "description": "Where, how to trigger it, what happens; readable by someone who never saw this pull request" }
+        }
+      }
+    },
+    "ask": {
+      "type": "string",
+      "description": "Required for level 2, level 3 and needs_human, left out otherwise: the one question the owner has to answer (level 3: what sensitive thing is touched; needs_human: what to look at), in plain words without file or function names"
+    },
+    "options": {
+      "type": "array",
+      "minItems": 2,
+      "description": "Required for level 2, left out otherwise: at least two ways to go; the first is what the pull request does now",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "pros", "cons"],
+        "properties": {
+          "what": { "type": "string" },
+          "pros": { "type": "string" },
+          "cons": { "type": "string" }
+        }
+      }
+    },
+    "recommend": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Required for level 2, left out otherwise: the number of the option you would pick (1 = the first entry of options)"
+    },
+    "summary": { "type": "string", "description": "Two sentences in plain words: what the pull request does; your verdict and its main reason" }
+  }
+}

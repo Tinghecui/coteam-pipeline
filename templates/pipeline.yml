@@ -1,0 +1,122 @@
+# The pipeline's configuration. Copy to .coteam/pipeline.yml in your repository.
+#
+# It is always read from the base branch, never from a pull request: a change under review
+# cannot relax the rules it is judged by. The executor is not allowed to edit this file.
+#
+# Every key is optional except `version`. A key you leave out takes its value from the
+# preset named below (presets/startup.yml in the engine), and from the engine's cautious
+# defaults after that. A list you write replaces the preset's list as a whole; it is not
+# appended to. An unknown key is an error, so a typo cannot silently change a rule.
+# The doctor (docs/install.md, step 6) checks the file as it is on the base branch.
+
+# The format of this file. Always 1.
+version: 1
+
+# The set of defaults to start from. "startup": a small team that wants low-risk changes
+# merged without a person and everything else put in front of an owner.
+preset: startup
+
+# What the pipeline is allowed to do.
+#   off     nothing at all
+#   record  write code, open pull requests, review them, ask for decisions, but never merge
+#           and never take a decision for you. Start here.
+#   on      also merge what the rules below allow
+mode: record
+
+# The branch pull requests are opened against and merged into. Use your default branch.
+base: main
+
+# GitHub logins whose answers count on decision items, and who may release a level-3 pull
+# request. Leave empty to mean "the repository's admins and maintainers"; naming them is
+# safer and does not depend on what the bot is allowed to list.
+owners: []
+
+# How to work in this codebase. The commands run on the CI runner, in a checkout of this
+# repository, without any GitHub token in their environment.
+stack:
+  # Run once before the agent starts (install dependencies, generate code).
+  setup: ["npm ci"]
+  # How to run the tests. The agent is told this command and may narrow it to single files.
+  test: "npm test"
+  # Every command here must pass before a pull request is opened or updated.
+  check: ["npm run lint"]
+  # Files that change what users see. A change that touches them is treated as visible.
+  ui_paths: ["src/**/*.tsx", "src/**/*.css"]
+
+# Which model writes and which model reviews (names as the Claude Code CLI takes them).
+# Leave out to use the preset's choice.
+# models:
+#   executor: claude-opus-5-5
+#   reviewer: claude-opus-5-5
+
+# Risk by path. A pull request's level is the highest level of any file it touches, or the
+# level the reviewer gives it, whichever is higher. Patterns are globs (`*` within a
+# directory, `**` across directories).
+risk:
+  # The executor may not touch these at all; a change that does is thrown away before it is
+  # pushed. Keep the workflows and the pipeline's own config in this list.
+  forbidden: [".github/**", ".coteam/**", "CLAUDE.md", "AGENTS.md"]
+  # Level 3: opened as a draft and merged only after an owner releases it. Never automatic.
+  level3: ["**/auth/**", "**/migrations/**"]
+  # Level 2: an owner is asked; the recommended option is taken after
+  # merge.default_after_hours if nobody answers.
+  level2: []
+  # Level 1: visible but low-risk. Everything not listed anywhere is level 0.
+  level1: []
+
+# How and when pull requests are merged (only in mode "on").
+merge:
+  # How pull requests are merged: squash, merge or rebase. It must be allowed in the
+  # repository's settings.
+  method: squash
+  # Pull requests up to this level are merged without a person once the review approves
+  # and CI is green (only in mode "on"). 0, 1 or 2; level 3 always waits for an owner.
+  auto_max_level: 1
+  # A level-2 question nobody answered takes the recommended option after this many hours.
+  # 0 = wait forever.
+  default_after_hours: 24
+
+# Brakes. The engine checks them before every run.
+limits:
+  # Executor runs at the same time.
+  max_parallel: 2
+  # How often one pull request may be sent back for rework before an owner is asked.
+  # Counted again from zero after each decision by a person.
+  max_rework: 4
+  # Executor runs per issue (or per row of a spec issue). Must be at least max_rework + 1.
+  issue_max_runs: 5
+  # Model spend per issue (or row), in US dollars, before an owner is asked.
+  issue_max_usd: 20
+  # Model spend per day for the whole repository, in US dollars. Nothing new starts past it.
+  daily_usd: 30
+  # The executor's agent is stopped after this many minutes. At most about 240: the CI
+  # job itself ends after 300, and setup and checks need room too.
+  executor_minutes: 120
+  # The same for the reviewer. At most about 45: its CI job ends after 60.
+  reviewer_minutes: 20
+
+# The labels the pipeline uses. Create them once (the doctor command prints the lines).
+labels:
+  # Put this on an issue to hand it to the pipeline. Only people who can label issues can
+  # do that, which is what keeps issues written by strangers away from the agent.
+  work: pipeline
+  # On the issues the pipeline opens when it needs a decision from an owner.
+  decide: "pipeline:decide"
+  # An owner puts this on a level-3 pull request to release it.
+  approved: "pipeline:approved"
+  # A pull request that was closed without merging is not redone by itself. Put this on
+  # the issue to have it done again; the pipeline removes the label once it has acted.
+  redo: "pipeline:redo"
+  # Reserved for follow-up issues (things the reviewer noted but did not block on).
+  # Version 0.1 lists follow-ups in the review comment and does not open issues yet.
+  followup: "pipeline:followup"
+  # The reviewer labels each pull request with its level: level:0 ... level:3.
+  level_prefix: "level:"
+
+# The name of the commit status that carries the review verdict. If you protect the base
+# branch with required status checks, this is the name to require.
+status_context: pipeline/review
+
+# Branches the pipeline creates start with this. Only pull requests from such branches of
+# this repository are the pipeline's; it leaves every other pull request alone.
+branch_prefix: pipeline/

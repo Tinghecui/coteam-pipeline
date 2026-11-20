@@ -1,0 +1,94 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "plain", "files", "evidence", "not_verified"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "First sentence: what changed, for a developer; it becomes the pull request title (no issue number, nothing secret). More sentences if needed: where the code differed from the issue, what was declined and why"
+    },
+    "plain": {
+      "type": "object",
+      "description": "For people who do not read code; shown at the top of the pull request. Plain words: no file names, function names, commands or backticks",
+      "additionalProperties": false,
+      "required": ["what", "decided_myself", "risk", "verify"],
+      "properties": {
+        "what": { "type": "string", "description": "What this pull request does, as a user would see it; two or three sentences" },
+        "decided_myself": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Everything the issue did not say and you decided yourself, one sentence each; empty list if none. Leave nothing out: the reviewer compares it with the diff"
+        },
+        "risk": { "type": "string", "description": "If the change is wrong: what a user would see and how to go back" },
+        "verify": { "type": "string", "description": "How a person checks it: where to go, what to do, what they should see" }
+      }
+    },
+    "files": {
+      "type": "array",
+      "description": "One entry per file changed, created or deleted (in a rework: for the whole pull request)",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "why"],
+        "properties": {
+          "path": { "type": "string", "description": "Path from the repository root" },
+          "why": { "type": "string", "description": "Why this file had to change" }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["red", "green", "checks"],
+      "properties": {
+        "red": {
+          "type": "object",
+          "description": "The new test failing before the change",
+          "additionalProperties": false,
+          "required": ["command", "output"],
+          "properties": {
+            "command": { "type": "string", "description": "The exact command that was run; empty string if no test could be written" },
+            "output": { "type": "string", "description": "The lines of its output that matter, verbatim (failing test name, expected, actual). If no test could be written: why not, and how the starting point was confirmed" }
+          }
+        },
+        "green": {
+          "type": "object",
+          "description": "The same test passing after the change",
+          "additionalProperties": false,
+          "required": ["command", "output"],
+          "properties": {
+            "command": { "type": "string", "description": "The exact command that was run" },
+            "output": { "type": "string", "description": "Its passing output, verbatim" }
+          }
+        },
+        "checks": {
+          "type": "array",
+          "description": "Every configured check and every other test command that was run",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command", "ok"],
+            "properties": {
+              "command": { "type": "string" },
+              "ok": { "type": "boolean", "description": "true only if it was actually run and passed" }
+            }
+          }
+        }
+      }
+    },
+    "not_verified": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Everything that was not run or not verified, one item each, in plain words; also flaws seen nearby and left alone (start those with \"Not fixed here:\"). Empty list only if everything claimed was run and seen"
+    },
+    "cannot_fix": {
+      "type": "object",
+      "description": "Only when the work was not done: it cannot be done, is intended behaviour, or is already done on the base branch. Leave it out otherwise",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "type": "string", "description": "Why, what was found, and what should change (for \"already done\": the commits that did it)" }
+      }
+    }
+  }
+}

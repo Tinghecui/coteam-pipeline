@@ -1,0 +1,45 @@
+# The "startup" preset: a small team that wants low-risk changes merged without a human
+# and everything else put in front of an owner. Use it with `preset: startup` in
+# `.coteam/pipeline.yml`; any key written there replaces the value below (lists are
+# replaced as a whole, not appended to).
+version: 1
+mode: record                 # off | record | on.  record = open PRs and review, never merge
+base: main
+owners: []                   # logins allowed to answer decisions; empty = repo admins/maintainers
+stack:
+  setup: ["npm ci"]          # run once in the executor's checkout before the agent starts
+  test: "npm test"           # how to run tests (the agent may narrow it to files)
+  check: ["npm run lint"]    # must pass before the PR is opened
+  ui_paths: ["src/**/*.tsx", "src/**/*.css"]
+models:
+  executor: claude-opus-5-5
+  reviewer: claude-opus-5-5
+risk:
+  # The executor may not touch these. Keep the pipeline's own config and the workflows in
+  # this list: an agent must not be able to relax the rules it runs under.
+  forbidden: [".github/**", ".coteam/**", "CLAUDE.md", "AGENTS.md"]
+  level3: ["**/auth/**", "**/migrations/**"]
+  level2: []
+  level1: []
+  # anything else: level 0 by path; the reviewer may raise it
+merge:
+  method: squash             # squash | merge | rebase
+  auto_max_level: 1          # levels <= this merge without a human once reviewed and CI is green
+  default_after_hours: 24    # level-2 decisions take the recommended option after this long; 0 = wait forever
+limits:
+  max_parallel: 2            # executor runs at the same time
+  max_rework: 4              # per PR, counted since the last human decision
+  issue_max_runs: 5          # per issue or per row; must fit the first run plus max_rework reworks
+  issue_max_usd: 20
+  daily_usd: 30
+  executor_minutes: 120
+  reviewer_minutes: 20
+labels:
+  work: pipeline             # put on an issue = hand it to the pipeline
+  decide: "pipeline:decide"  # decision items
+  approved: "pipeline:approved"   # owner puts it on a level-3 PR to release it
+  redo: "pipeline:redo"
+  followup: "pipeline:followup"
+  level_prefix: "level:"
+status_context: pipeline/review
+branch_prefix: pipeline/

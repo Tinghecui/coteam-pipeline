@@ -34,7 +34,8 @@ requests but merges nothing. The person switches it on themselves, later, after 
   person's decisions.
 - Never weaken `risk.forbidden`. The workflows and `.coteam/` stay in it.
 - Ask before each step that creates something on GitHub: the App, the pull request, the
-  labels, the first issue. Labelling the first issue starts spending their money.
+  first issue. Labelling the first issue starts spending their money. The labels of step 7
+  are the exception: say that the doctor will create them, and run it.
 - Commit only the four files this installation writes, staged by name, on a new branch.
   Leave everything else in the working tree alone.
 - When a step fails, show the person the message and what it means. Do not work around a

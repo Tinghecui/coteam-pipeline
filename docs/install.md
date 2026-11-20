@@ -241,6 +241,9 @@ Look at these before you trust it:
   per run with turns and dollars. Compare with `limits.issue_max_usd` and `limits.daily_usd`.
 - **Decision items**: issues labelled `pipeline:decide`. Answer with the option's letter
   (`A`, or `B: do it this way`) and see that the answer is applied.
+  A question about a pull request stays in one item across reworks: when new commits
+  raise the same kind of question, the item is rewritten for them and says so in a comment,
+  and answers given before that comment do not count.
 
 Merge the pull requests yourself for now. When a week of them needed nothing from you
 that the pipeline did not already ask, switch on:
@@ -256,6 +259,19 @@ Recommended at that point: protect the base branch, require pull requests, and r
 CI checks plus the status `pipeline/review`. If the rule requires approving reviews from
 people, the bot cannot merge by itself; either leave that requirement out or add the App to
 the rule's bypass list. The ledger branch `pipeline/ledger` must stay pushable by the App.
+
+**How late things can be.** The pipeline moves when GitHub sends it an event (a label, a
+comment, a finished run) and otherwise twice an hour, on a schedule. Things that happen by
+the clock alone, such as a level-2 question taking its default after
+`merge.default_after_hours`, happen at the first scheduled round after their time. GitHub
+does not promise scheduled runs: under load it starts them late and sometimes drops one,
+so "after 24 hours" can mean 24 hours and half an hour, occasionally an hour more. Nothing
+is lost when a round is dropped; the next one reads the whole state again. To run a round
+now, start `pipeline-tick` by hand from the Actions tab.
+
+**When the daily budget is used up** (`limits.daily_usd`), nothing new starts until
+midnight UTC. The pipeline says so once a day, in a comment on each issue or pull request
+that is waiting, so that waiting does not look like a pipeline that stopped.
 
 To stop everything at once, set `mode: off`, or disable the three workflows in the Actions tab.
 

@@ -122,6 +122,8 @@ Kinds added when the roles were wired together (who writes, who reads):
 | `decision` | tick | PR (stuck items: issue) | tick, fix | `{item, key, by, how, action, sha?, row?, text?}` |
 | `row-done`, `row-closed`, `finished` | tick | issue | tick, fix | spec progress; a single task is row 0 |
 | `receipt`, `nudge` | tick | decision item | tick | the item was applied or closed / an answer needs a sentence |
+| `refresh` | tick | decision item | people | the item was rewritten for new commits of its PR (the item's own `asked` time is what makes older answers not count) |
+| `budget-wait` | tick | issue or PR | tick | said once per UTC day: this waits for the daily budget |
 
 Whose marks count. Every role reads comments through `trustedComments(comments, authors)`:
 a comment that carries a mark counts only when the pipeline's own account posted it

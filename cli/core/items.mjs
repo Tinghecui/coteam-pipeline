@@ -124,6 +124,8 @@ export function parseItem(issue) {
     row: Number(meta.row) || 0,
     sha: String(meta.sha || ""),
     cause: String(meta.cause || ""),
+    // Set when the item was rewritten for a new commit: answers older than this were about the old one.
+    asked: Number.isFinite(Date.parse(meta.asked)) ? meta.asked : "",
     number: issue.number,
     state: issue.state || "open",
     title: issue.title || "",
@@ -168,7 +170,7 @@ function reviewerOptions(review) {
 //   pr: { number, title, draft, head: { sha } }; review: the `review` mark of the head, which
 //   may carry { ask, options, recommend, summary } as the reviewer wrote them
 //   issue, row: what the PR's branch belongs to; owners: whose answer counts; background: the PR's plain summary
-export function prAskItem({ pr, review = {}, config, now, issue = 0, row = 0, owners = [], background = "" }) {
+export function prAskItem({ pr, review = {}, config, now, issue = 0, row = 0, owners = [], background = "", asked = "" }) {
   const T = TEXT.prAsk
   const ro = reviewerOptions(review)
   let options
@@ -201,6 +203,7 @@ export function prAskItem({ pr, review = {}, config, now, issue = 0, row = 0, ow
     options: letter(options),
     recommend: "A",
     due: dueAt(config, now),
+    ...(asked ? { asked } : {}),
   }
   return {
     meta,
@@ -219,7 +222,7 @@ export function prAskItem({ pr, review = {}, config, now, issue = 0, row = 0, ow
 // A PR that only an owner can move: level 3, needs_human, a draft, a review that never ran,
 // or a rework loop that hit its limit. Never applies anything by default.
 //   cause: one of CAUSES["pr-release"]; reason: one line saying what happened (shown as is)
-export function prReleaseItem({ pr, cause, reason = "", review = {}, issue = 0, row = 0, owners = [], background = "" }) {
+export function prReleaseItem({ pr, cause, reason = "", review = {}, issue = 0, row = 0, owners = [], background = "", asked = "" }) {
   const T = TEXT.prRelease
   const C = T.cause[cause] || T.cause.needs_human
   const stuck = cause === "rework-cap" || cause === "rework-failed"
@@ -241,6 +244,7 @@ export function prReleaseItem({ pr, cause, reason = "", review = {}, issue = 0, 
     options: letter(options),
     recommend: null,
     due: null,
+    ...(asked ? { asked } : {}),
   }
   const ask = (cause === "level3" || cause === "needs_human") && filled(review?.ask) ? oneLine(review.ask, 500) : C.ask(pr.number)
   return {

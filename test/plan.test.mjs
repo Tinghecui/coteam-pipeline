@@ -919,7 +919,8 @@ test("stale items are closed: the PR was merged or closed, got a new head, or no
     ],
   })
   const why = Object.fromEntries(p.closeItems.map((x) => [x.item, x.why]))
-  assert.match(why[900], /new commits were pushed to PR #41/)
+  // new commits, and the new review asks the same kind of thing: the item is rewritten, not replaced (below)
+  assert.equal(why[900], undefined)
   assert.equal(why[901], "PR #42 was merged")
   assert.equal(why[902], "PR #43 was closed")
   assert.equal(why[903], "PR #44 no longer needs a decision")
@@ -930,9 +931,21 @@ test("stale items are closed: the PR was merged or closed, got a new head, or no
   assert.deepEqual(p.applyAnswers, [])
   assert.deepEqual(p.closeItems[0].actions[0].reason, "not_planned")
   assert.deepEqual(p.merge.map((x) => x.pr), [44])
-  // the new head of #41 gets its own item in the same round: the old one named a commit that is gone
-  assert.deepEqual(opened(p), [["pr-release", "level3", 41]])
-  assert.equal(parseItem({ number: 1, body: p.openItems[0].actions[0].body }).sha, "h1-new")
+  // the new head of #41: no second item, the open one now names the new commit, and the
+  // answer given about the old commit is not applied, now or in a later round
+  assert.deepEqual(opened(p), [])
+  assert.deepEqual(p.refreshItems.map((x) => [x.item, x.pr, does(x)]), [[900, 41, ["editIssue", "comment"]]])
+  const rewritten = parseItem({ number: 900, body: p.refreshItems[0].actions[0].body })
+  assert.deepEqual([rewritten.sha, rewritten.asked], ["h1-new", now.toISOString()])
+  assert.match(p.refreshItems[0].actions[1].body, /<!-- pipeline-refresh \{"sha":"h1-new"\} -->\nPR #41 has new commits \(now at `h1-new`\) and was reviewed again\./)
+  const next = plan({
+    prs: [reviewed(41, "pipeline/1-x", "h1-new", "approve", 3)],
+    items: [itemIssue(900, { title: "t", body: p.refreshItems[0].actions[0].body }, { comments: [answer("A")] })],
+  })
+  assert.deepEqual([next.applyAnswers, next.refreshItems, next.closeItems, next.waiting.map((w) => w.item)], [[], [], [], [900]])
+  // an answer written after the rewrite counts
+  const later = planTick(state({ prs: [reviewed(41, "pipeline/1-x", "h1-new", "approve", 3)], items: [itemIssue(900, { title: "t", body: p.refreshItems[0].actions[0].body }, { comments: [answer("A", "ann", new Date(now.getTime() + 60000).toISOString())] })] }), cfg(), new Date(now.getTime() + 120000))
+  assert.deepEqual(later.applyAnswers.map((x) => [x.item, x.key, x.effect]), [[900, "A", "merge"]])
   // the question changed (level 3 before, now the PR is stuck in rework): the old item goes, the new one comes
   const stuckNow = reviewed(46, "pipeline/6-x", "h6", "reject", 0, { comments: [1, 2, 3, 4].map((k) => m("rework", { sha: `o${k}`, attempt: k }, { at: ago(300) })) })
   const q = plan({ prs: [stuckNow], items: [item(908, stuckNow, "level3")] })
@@ -1069,4 +1082,76 @@ test("a skip comment the executor renewed in place holds the run back from the t
   assert.deepEqual(fixes(p), [])
   assert.ok(noted(p, /#1: the executor did not start \(open_pr\); it is dispatched again later/))
   assert.deepEqual(fixes(plan({ issues: [issue(1, { comments: [skipped(180, 31)] })] })), [[1, 0]])
+})
+
+// ---------- one item per question, however many commits ----------
+
+test("a level-2 question survives a rework: held while the PR is on its way to a new commit, rewritten when the new commit asks the same, closed when it does not", () => {
+  const two = reviewed(41, "pipeline/1-x", "h1", "approve", 2)
+  const item = askItem(900, two, { created_at: ago(30) })
+  // the PR starts to conflict with the base while the question is open: it goes back to the
+  // executor, and the item stays (before, it was closed here and a new one opened afterwards)
+  const conflicting = { ...two, mergeable: false, mergeable_state: "dirty" }
+  const p = plan({ prs: [conflicting], items: [item] })
+  assert.deepEqual([reworksOf(p), p.closeItems, opened(p), p.refreshItems], [[[41, 1]], [], [], []])
+  assert.deepEqual(p.waiting, [{ item: 900, kind: "pr-ask", pr: 41, due: null, hold: true }])
+  // ... and neither an answer nor the default is applied to a commit that is being replaced
+  const answered = plan({ prs: [conflicting], items: [{ ...item, comments: [answer("A")] }] })
+  assert.deepEqual([answered.applyAnswers, answered.merge, reworksOf(answered)], [[], [], [[41, 1]]])
+  assert.ok(noted(answered, /item #900: PR #41 is being reworked or reviewed again; the answer is not applied to the old commit/))
+  const overdue = plan({ prs: [conflicting], items: [askItem(900, two, {}, cfg(), new Date(now.getTime() - 48 * 3600000))] })
+  assert.deepEqual([overdue.applyDefaults, overdue.merge], [[], []])
+
+  // the rework pushed a new commit that has not been reviewed yet: still held, the review is dispatched
+  const pushed = pr(41, "pipeline/1-x", "h2", { comments: two.comments })
+  const waiting = plan({ prs: [pushed], items: [{ ...item, comments: [answer("A")] }] })
+  assert.deepEqual([waiting.dispatchReview.map((r) => r.pr), waiting.closeItems, waiting.applyAnswers, waiting.waiting.map((w) => [w.item, w.hold])], [[41], [], [], [[900, true]]])
+
+  // reviewed again at level 2: the same item, rewritten for the new commit, its clock started again
+  const again = reviewed(41, "pipeline/1-x", "h2", "approve", 2, { reviewExtra: { ask: "Round the total up or down?", options: [{ what: "Up" }, { what: "Down" }], recommend: 1 } })
+  const r = plan({ prs: [again], items: [{ ...item, comments: [answer("A")] }] })
+  assert.deepEqual([opened(r), r.closeItems, r.applyAnswers], [[], [], []])
+  assert.deepEqual(r.refreshItems.map((x) => [x.item, x.kind, x.cause, x.pr]), [[900, "pr-ask", "level2", 41]])
+  const [edit, said] = r.refreshItems[0].actions
+  assert.deepEqual([edit.do, edit.issue, said.do, said.on], ["editIssue", 900, "comment", 900])
+  assert.match(edit.body, /Round the total up or down\?/)
+  const meta = parseItem({ number: 900, body: edit.body })
+  assert.deepEqual([meta.sha, meta.asked, meta.due], ["h2", now.toISOString(), new Date(now.getTime() + 24 * 3600000).toISOString()])
+  assert.match(said.body, /An answer given before this comment was about the old commits and does not count\. Without an answer, the recommended option applies /)
+
+  // reviewed again at level 0: nothing to ask any more, the item is closed and the PR merges
+  const fine = plan({ prs: [reviewed(41, "pipeline/1-x", "h2", "approve", 0)], items: [item] })
+  assert.deepEqual([fine.closeItems.map((x) => [x.item, x.why]), fine.merge.map((x) => x.pr), fine.refreshItems], [[[900, "PR #41 no longer needs a decision"]], [41], []])
+  // reviewed again at level 3: another kind of question, so the old item goes and a new one comes
+  const three = plan({ prs: [reviewed(41, "pipeline/1-x", "h2", "approve", 3)], items: [item] })
+  assert.deepEqual([three.closeItems.map((x) => x.item), opened(three), three.refreshItems], [[900], [["pr-release", "level3", 41]], []])
+  // the same commit comes back to the same question (a failed check was run again and passed): the held answer counts
+  const back = plan({ prs: [two], items: [{ ...item, comments: [answer("A")] }] })
+  assert.deepEqual(back.applyAnswers.map((x) => [x.item, x.key]), [[900, "A"]])
+})
+
+test("work that waits for the daily budget says so where an owner looks, once a day", () => {
+  const spent = [entry(9, 30, { usd: 30, outcome: "pr" })]
+  const config = cfg({ limits: { daily_usd: 30 } })
+  const rejected = reviewed(41, "pipeline/1-x", "h1", "reject", 0)
+  const unreviewed = pr(42, "pipeline/2-x", "h2")
+  const p = plan({ issues: [issue(1), issue(2), issue(3)], prs: [rejected, unreviewed], ledger: spent }, config)
+  assert.deepEqual([p.dispatchFix, p.dispatchRework, p.dispatchReview], [[], [], []])
+  // issues 1 and 2 have a PR going; issue 3 and both PRs are what is held back
+  assert.deepEqual(p.notices.map((x) => x.on), [41, 42, 3])
+  const day = now.toISOString().slice(0, 10)
+  const body = p.notices[2].actions[0].body
+  assert.ok(body.startsWith(`<!-- pipeline-budget-wait {"day":"${day}"} -->\nWaiting for the daily budget: $30.00 spent today (UTC ${day}), the daily limit is $30.00.`), body)
+  assert.match(body, /starts by itself after midnight UTC.*raise `limits\.daily_usd`/)
+  // said already today: not again; said yesterday: again
+  const told = (d) => m("budget-wait", { day: d })
+  const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10)
+  const q = plan({ issues: [issue(3, { comments: [told(day)] }), issue(4, { comments: [told(yesterday)] })], prs: [{ ...unreviewed, comments: [told(day)] }], ledger: spent }, config)
+  assert.deepEqual(q.notices.map((x) => x.on), [4])
+  // under the limit, or nothing waiting: nothing is said
+  assert.deepEqual(plan({ issues: [issue(3)], ledger: [entry(9, 30, { usd: 5 })] }, config).notices, [])
+  assert.deepEqual(plan({ ledger: spent }, config).notices, [])
+  // a mark typed by someone else does not silence it
+  const forged = plan({ issues: [issue(3, { comments: [c(mark("budget-wait", { day }), { by: "mallory" })] })], ledger: spent }, config)
+  assert.deepEqual(forged.notices.map((x) => x.on), [3])
 })

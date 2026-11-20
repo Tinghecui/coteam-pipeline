@@ -29,6 +29,9 @@ on:
     types: [completed]
   schedule:
     # A fallback for events that were missed; the events above do the real work.
+    # It is also what applies things that happen by the clock (a default after
+    # merge.default_after_hours). GitHub starts scheduled runs late under load and sometimes
+    # drops one, so such things can be half an hour to an hour late.
     - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:

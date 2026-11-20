@@ -67,6 +67,9 @@
 //     applyDefaults:  [{ item, key, effect, pr, actions }]            skipped by the role in record mode
 //     nudges:         [{ item, comment, key, actions }]               an answer that needs a sentence and has none
 //     closeItems:     [{ item, why, actions }]                        stale items
+//     refreshItems:   [{ item, kind, cause, pr, actions }]            an open item rewritten in place: the PR got new
+//                     commits and the question to ask about them is of the same kind
+//     notices:        [{ on, day, actions }]                          said once a day where work waits for the daily budget
 //     closeIssues:    [{ issue, rows: [{ row, pr }], actions }]        every row merged
 //     openItems:      [{ kind, cause, pr | issue, row, title, actions }]
 //     dispatchReview: [{ pr, attempt, actions }]
@@ -84,7 +87,7 @@
 // An entry that follows from an answer (`item` set on a merge or a rework) must be skipped by
 // the role when applying that answer failed.
 import { ciRuns, mergeable, REVIEW_RETRIES } from "./decide.mjs"
-import { appliedWords, decisionComment, parseAnswer, parseItem, prAskItem, prReleaseItem, stuckItem, TEXT as ITEM_TEXT } from "./items.mjs"
+import { appliedWords, decisionComment, fmtTime, parseAnswer, parseItem, prAskItem, prReleaseItem, stuckItem, TEXT as ITEM_TEXT } from "./items.mjs"
 import { budget, claudeCooldown, countedRuns, NOT_AN_ATTEMPT } from "./ledger.mjs"
 import { activeClaims, believedReviews, closedRows, countSince, findMarks, hasMark, isAfter, issueOfBranch, latestReview, mark, reworkObsolete, reworks, rowOfBranch, takesIssue, trustedComments } from "./marks.mjs"
 import { parseSpec, specProgress } from "./spec.mjs"
@@ -138,6 +141,8 @@ export function emptyPlan(mode) {
     applyDefaults: [],
     nudges: [],
     closeItems: [],
+    refreshItems: [],
+    notices: [],
     closeIssues: [],
     openItems: [],
     dispatchReview: [],
@@ -305,6 +310,8 @@ export function planTick(state, config, now = new Date()) {
     const nudged = new Set(findMarks("nudge", it.comments).map((m) => String(m.comment)))
     for (const c of [...it.comments].reverse()) {
       if (hasMark(c.body)) continue
+      // The item was rewritten for a new commit since: what was answered before was about the old one.
+      if (it.asked && !(String(c.created_at || "") > it.asked)) continue
       const a = parseAnswer(c, it)
       if (!a) continue
       const login = c.user?.login || ""
@@ -353,6 +360,9 @@ export function planTick(state, config, now = new Date()) {
   }
   const strip = ({ virtual, ...entry }) => entry
 
+  // Does the item ask about the change itself (and not about trouble the pipeline ran into)?
+  // Such a question usually comes back after a rework, and is then kept in the same item.
+  const aboutChange = (it) => it.kind === "pr-ask" || (it.kind === "pr-release" && ["level3", "needs_human", "draft"].includes(it.cause))
   // Open items by what they are about. Items that can be settled without looking further are settled here.
   const openByPr = new Map()
   const openByIssue = new Map()
@@ -381,9 +391,18 @@ export function planTick(state, config, now = new Date()) {
         closeStale(it, TEXT.stale.applied)
         continue
       }
+      // New commits since it was opened: what it asks is about a commit that is gone. It is
+      // kept, unanswerable, until the new head has been looked at: the same kind of question
+      // is then written into this item (one issue per question, however many commits), any
+      // other outcome closes it.
+      // An item about the process (a rework that failed, a review that never ran) is simply
+      // closed, as it always was: a new commit means that trouble is over.
       if (it.sha && it.sha !== pr.head?.sha) {
-        closeStale(it, TEXT.stale.newHead(target))
-        continue
+        if (!aboutChange(it)) {
+          closeStale(it, TEXT.stale.newHead(target))
+          continue
+        }
+        it.outdated = true
       }
     }
     if (map.has(target)) {
@@ -391,6 +410,7 @@ export function planTick(state, config, now = new Date()) {
       continue
     }
     map.set(target, it)
+    if (it.outdated) continue
     const a = answerOf(it)
     if (a && "nudge" in a) {
       // An option that needs a sentence, answered without one: said once, then the item goes on waiting.
@@ -413,7 +433,7 @@ export function planTick(state, config, now = new Date()) {
   // What one PR needs now, given a decision that is being made this round (`v`) or none.
   // Nothing is written to the plan here: the caller may evaluate a PR twice.
   const evalPr = (pr, v) => {
-    const out = { want: null, rework: null, review: null, merge: null, notes: [] }
+    const out = { want: null, rework: null, review: null, merge: null, settled: false, notes: [] }
     const n = pr.number
     const head = pr.head?.sha || ""
     const issueNo = issueOf(pr)
@@ -475,13 +495,13 @@ export function planTick(state, config, now = new Date()) {
         const failed = here.filter((r) => r.failed).pop()
         const pending = here.pop()
         if (failed) {
-          out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: () => prReleaseItem({ ...base, cause: "rework-failed", review: reviewMark, reason: TEXT.reason.failed(failed.attempt || attempts, oneLine(failed.why, 200), why) }) }
+          out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "rework-failed", review: reviewMark, reason: TEXT.reason.failed(failed.attempt || attempts, oneLine(failed.why, 200), why) }) }
           return out
         }
         // The executor says in a `skip` mark when it refused to start.
         const skip = pending ? findMarks("skip", cs).filter((k) => isAfter(k, pending) && (!k.sha || k.sha === head)).pop() : null
         if (skip?.permanent === true) {
-          out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: () => prReleaseItem({ ...base, cause: "rework-failed", review: reviewMark, reason: `${TEXT.reason.refused(oneLine(skip.why, 60))} Still: ${why}.` }) }
+          out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "rework-failed", review: reviewMark, reason: `${TEXT.reason.refused(oneLine(skip.why, 60))} Still: ${why}.` }) }
           return out
         }
         if (skip) {
@@ -499,11 +519,11 @@ export function planTick(state, config, now = new Date()) {
             out.notes.push(TEXT.note.reworkPending(n))
             return out
           }
-          out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: () => prReleaseItem({ ...base, cause: "rework-failed", review: reviewMark, reason: TEXT.reason.lost(pending.attempt || attempts, Math.round((nowMs - ms(pending.at)) / 60000), why) }) }
+          out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "rework-failed", review: reviewMark, reason: TEXT.reason.lost(pending.attempt || attempts, Math.round((nowMs - ms(pending.at)) / 60000), why) }) }
           return out
         }
         if (attempts >= lim.max_rework) {
-          out.want = { kind: "pr-release", cause: "rework-cap", sha: head, build: () => prReleaseItem({ ...base, cause: "rework-cap", review: reviewMark, reason: TEXT.reason.cap(attempts, lim.max_rework, why) }) }
+          out.want = { kind: "pr-release", cause: "rework-cap", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "rework-cap", review: reviewMark, reason: TEXT.reason.cap(attempts, lim.max_rework, why) }) }
           return out
         }
       }
@@ -518,7 +538,7 @@ export function planTick(state, config, now = new Date()) {
       const since = v ? nowIso : countSince(cs, issueComments)
       const b = budget(ledger, { issue: issueNo, row: row || null, limits: lim, now, since })
       if (b.capped) {
-        out.want = { kind: "pr-release", cause: "rework-cap", sha: head, build: () => prReleaseItem({ ...base, cause: "rework-cap", review: reviewMark, reason: TEXT.reason.budget(b.reason, why) }) }
+        out.want = { kind: "pr-release", cause: "rework-cap", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "rework-cap", review: reviewMark, reason: TEXT.reason.budget(b.reason, why) }) }
         return out
       }
       out.rework = { pr: n, issue: issueNo, row, sha: head, attempt: attempts + 1, why, ...again }
@@ -549,7 +569,7 @@ export function planTick(state, config, now = new Date()) {
       const lost = lastD?.virtual ? 0 : mine.filter((r) => r.status === "completed" && (!lastWord || r.created_at > lastWord)).length
       const tries = failedMarks + lost
       if (tries > REVIEW_RETRIES) {
-        out.want = { kind: "pr-release", cause: "review-failed", sha: head, build: () => prReleaseItem({ ...base, cause: "review-failed", reason: TEXT.reason.review(tries) }) }
+        out.want = { kind: "pr-release", cause: "review-failed", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "review-failed", reason: TEXT.reason.review(tries) }) }
         return out
       }
       out.review = { pr: n, attempt: tries + 1 }
@@ -569,6 +589,8 @@ export function planTick(state, config, now = new Date()) {
         review: { sha: head, state: "success" },
         checks: { runs: ciRuns(pr.checkRuns, context), statuses: pr.statuses || [], repoHasChecks },
       })
+      // Approved (or released) with nothing left to ask: only the merge is still to come.
+      out.settled = true
       if (m.ok) out.merge = { pr: n, sha: head, method: config.merge.method, issue: issueNo, row, level }
       else out.notes.push(TEXT.note.notMerged(n, m.why))
       return out
@@ -580,16 +602,21 @@ export function planTick(state, config, now = new Date()) {
       return out
     }
     if (!draft && verdict === "approve" && level < 3) {
-      out.want = { kind: "pr-ask", cause: "level2", sha: head, build: () => prAskItem({ ...base, review: reviewMark, config, now }) }
+      out.want = { kind: "pr-ask", cause: "level2", sha: head, build: (extra) => prAskItem({ ...extra, ...base, review: reviewMark, config, now }) }
       return out
     }
     const cause = draft ? "draft" : verdict === "needs_human" ? "needs_human" : "level3"
-    out.want = { kind: "pr-release", cause, sha: head, build: () => prReleaseItem({ ...base, cause, review: reviewMark }) }
+    out.want = { kind: "pr-release", cause, sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause, review: reviewMark }) }
     return out
   }
 
   const reworkCands = []
   const reviewCands = []
+  // Where work is due: if today's budget keeps it from starting, that is said there (once a day).
+  const held = []
+  // The PR is between two states (a rework or a review is due or going): there is nothing to
+  // ask right now, and what will have to be asked is not known yet.
+  const inFlux = (res) => !res.want && !res.settled && Boolean(res.rework || res.review || res.notes.length)
   const openItem = (built, extra) => plan.openItems.push({ kind: built.meta.kind, cause: built.meta.cause, ...extra, title: built.title, actions: [{ do: "openIssue", title: built.title, body: built.body, labels: [L.decide] }] })
 
   for (const pr of prs) {
@@ -598,7 +625,13 @@ export function planTick(state, config, now = new Date()) {
     let it = openByPr.get(n) || null
     let v = null
     let by = "review"
-    const a = it && answers.get(it.number)
+    let a = it && answers.get(it.number)
+    // An answer given while the PR is on its way to another commit is not applied to the old
+    // one; it counts again if the PR comes back to the same question without a new commit.
+    if (a && aboutChange(it) && inFlux(evalPr(pr, null))) {
+      note(TEXT.note.heldAnswer(it.number, n))
+      a = null
+    }
     if (a) {
       const entry = applyEntry(it, { ...a, how: "answer" })
       plan.applyAnswers.push(strip(entry))
@@ -635,7 +668,7 @@ export function planTick(state, config, now = new Date()) {
     }
     let res = evalPr(pr, v)
     // Past its time and still the question to ask: the recommended option applies (pr-ask only).
-    if (!v && it && it.kind === "pr-ask" && it.due && it.recommend && config.merge.default_after_hours > 0 && nowMs >= ms(it.due) && res.want && sameAsk(it, res.want)) {
+    if (!v && it && !it.outdated && it.kind === "pr-ask" && it.due && it.recommend && config.merge.default_after_hours > 0 && nowMs >= ms(it.due) && res.want && sameAsk(it, res.want)) {
       const entry = applyEntry(it, { key: it.recommend, how: "default" })
       plan.applyDefaults.push(strip(entry))
       if (config.mode === "on") {
@@ -647,14 +680,31 @@ export function planTick(state, config, now = new Date()) {
     for (const line of res.notes) note(line)
     if (v) it = null
     if (res.want && !v) {
-      if (it && sameAsk(it, res.want)) plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: it.due })
-      else {
+      if (it && sameAsk(it, res.want) && !it.outdated) plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: it.due })
+      else if (it && sameAsk(it, res.want)) {
+        // The same kind of question about the new commit: the item is rewritten, not replaced.
+        // The body first: it carries the new commit and since when the question stands, which
+        // is what keeps this from being done twice and an old answer from being applied.
+        const built = res.want.build({ asked: nowIso })
+        plan.refreshItems.push({
+          item: it.number,
+          kind: it.kind,
+          cause: it.cause,
+          pr: n,
+          actions: [
+            { do: "editIssue", issue: it.number, title: built.title, body: built.body },
+            { do: "comment", on: it.number, body: `${mark("refresh", { sha: head })}\n${ITEM_TEXT.receipt.refreshed(n, head.slice(0, 7), built.meta.due ? fmtTime(built.meta.due) : "")}` },
+          ],
+        })
+        plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: built.meta.due })
+      } else {
         // The open item asks about something that is no longer the question: it goes, the new one comes.
         if (it) closeStale(it, TEXT.stale.changed(n))
         if (askedBefore(res.want, n, lastDecision(pr.comments))) note(TEXT.note.asked(`PR #${n}`))
         else openItem(res.want.build(), { pr: n, row: rowOf(pr) })
       }
-    } else if (it) closeStale(it, TEXT.stale.notNeeded(n))
+    } else if (it && aboutChange(it) && inFlux(res)) plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: null, hold: true })
+    else if (it) closeStale(it, TEXT.stale.notNeeded(n))
     const tie = v?.item ? { item: v.item } : {}
     if (res.merge) {
       plan.merge.push({ ...res.merge, by, ...tie, actions: [{ do: "merge", pr: n, sha: res.merge.sha, method: res.merge.method }] })
@@ -662,6 +712,7 @@ export function planTick(state, config, now = new Date()) {
     }
     if (res.rework) reworkCands.push({ ...res.rework, ...tie })
     if (res.review) reviewCands.push(res.review)
+    if (res.rework || res.review) held.push({ on: n, comments: pr.comments })
   }
 
   // ---- work issues ----
@@ -818,10 +869,19 @@ export function planTick(state, config, now = new Date()) {
       continue
     }
     fixCands.push({ issue: n, row })
+    held.push({ on: n, comments: cs })
   }
 
   // ---- hand out what may run ----
   if (overDaily && (reworkCands.length || fixCands.length || reviewCands.length)) note(TEXT.note.daily(spend.reason))
+  // The log is not where an owner looks. Without a word on the issue itself, work that waits
+  // for tomorrow's budget looks like a pipeline that stopped.
+  const day = nowIso.slice(0, 10)
+  if (overDaily)
+    for (const h of held) {
+      if (findMarks("budget-wait", h.comments).some((k) => k.day === day)) continue
+      plan.notices.push({ on: h.on, day, actions: [{ do: "comment", on: h.on, body: `${mark("budget-wait", { day })}\n${TEXT.comment.budgetWait(spend.reason)}` }] })
+    }
   for (const r of reviewCands) {
     if (!reviewsOk) {
       if (!overDaily) note(TEXT.note.reviewBlocked(r.pr))

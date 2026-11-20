@@ -312,6 +312,8 @@ export const ITEMS_TEXT = {
   receipt: {
     applied: (key, what) => `Option ${key} applied: ${what} Closing this item. To overrule it, say so on the pull request or issue itself.`,
     stale: (why) => `No decision is needed any more: ${why}. Closing this item.`,
+    refreshed: (pr, sha, when) =>
+      `PR #${pr} has new commits (now at \`${sha}\`) and was reviewed again. The question above was rewritten for them: please read it again. An answer given before this comment was about the old commits and does not count.${when ? ` Without an answer, the recommended option applies ${when}.` : ""}`,
     needsText: (key) => `Option ${key} needs a sentence saying what to do. Answer again as \`${key}: <what to change>\`.`,
   },
 }
@@ -429,6 +431,8 @@ export const PLAN_TEXT = {
   },
   comment: {
     rework: (attempt, max, why) => `Sent back to the executor (rework ${attempt} of at most ${max}): ${why}.`,
+    budgetWait: (reason) =>
+      `Waiting for the daily budget: ${reason}. Nothing is wrong and nothing is lost: this starts by itself after midnight UTC. To start it sooner, an owner can raise \`limits.daily_usd\` in \`.coteam/pipeline.yml\` on the base branch.`,
     reworkAgain: (attempt, max, why, send, skipped) => `Sent back to the executor again (rework ${attempt} of at most ${max}, sent ${send} times: the run before did not start, ${skipped}): ${why}.`,
     rowDone: (row, pr) => `Row ${row} is done: PR #${pr} was merged.`,
     taskDone: (pr) => `PR #${pr} was merged.`,
@@ -462,6 +466,7 @@ export const PLAN_TEXT = {
     probe: "the cooldown is over; one probe run is dispatched first",
     probeOk: (id, minutes) => `probe run ${id} has been going for ${minutes} minutes: the agent works again`,
     daily: (reason) => `nothing is dispatched: ${reason}`,
+    heldAnswer: (item, pr) => `item #${item}: PR #${pr} is being reworked or reviewed again; the answer is not applied to the old commit`,
     queued: (what, limit) => `${what} waits for a free slot (at most ${limit} executor runs at a time)`,
     fixRunning: (what) => `${what}: an executor run is going`,
     skipWait: (what, why) => `${what}: the executor did not start (${why}); it is dispatched again later`,
@@ -511,6 +516,8 @@ export const TICK_TEXT = {
     applyDefaults: (e) => `apply the default ${e.key} (${e.effect}) of item #${e.item} to PR #${e.pr}`,
     nudges: (e) => `ask for a sentence on item #${e.item} (option ${e.key})`,
     closeItems: (e) => `close item #${e.item}: ${e.why}`,
+    refreshItems: (e) => `rewrite item #${e.item} for the new commits of PR #${e.pr}`,
+    notices: (e) => `say on #${e.on} that it waits for the daily budget`,
     labels: (e) => `remove the label "${e.remove}" from #${e.on}`,
     closeIssues: (e) => `close #${e.issue}: everything is merged`,
     openItems: (e) => `open a decision item (${e.kind}, ${e.cause}) for ${e.pr ? `PR #${e.pr}` : `#${e.issue}`}`,

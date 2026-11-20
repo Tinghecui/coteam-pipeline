@@ -124,7 +124,7 @@ test("one round, end to end: reads the state, carries the plan out in a safe ord
   const res = await run({ dry: false }, io)
   assert.equal(res.ok, true, JSON.stringify(res.failures))
   assert.deepEqual(res.failures, [])
-  assert.deepEqual(res.counts, { markRows: 1, applyAnswers: 1, applyDefaults: 0, merge: 2, closeItems: 0, labels: 0, closeIssues: 1, openItems: 1, nudges: 0, dispatchReview: 1, dispatchRework: 1, dispatchFix: 1 })
+  assert.deepEqual(res.counts, { markRows: 1, applyAnswers: 1, applyDefaults: 0, merge: 2, closeItems: 0, refreshItems: 0, labels: 0, closeIssues: 1, openItems: 1, nudges: 0, notices: 0, dispatchReview: 1, dispatchRework: 1, dispatchFix: 1 })
   assert.deepEqual(short(calls), [
     // bookkeeping first: the merged PR is recorded on its issue
     "POST issues/6/comments",
@@ -225,10 +225,12 @@ test("every kind of step reaches the right endpoint", async () => {
     { do: "openIssue", title: "t", body: "b", labels: ["l"] },
     { do: "dispatch", workflow: "pipeline-fix.yml", inputs: { issue: "5", row: "2", pr: "" } },
     { do: "merge", pr: 7, sha: "abc", method: "rebase" },
+    { do: "editIssue", issue: 5, title: "t2", body: "b2" },
   ]
   const out = await execute({ markRows: [{ issue: 5, row: 0, pr: 7, kind: "done", actions }] }, io)
   assert.deepEqual(out.failures, [])
-  assert.deepEqual(short(calls), ["POST issues/5/comments", "POST statuses/abc", "POST issues/5/labels", "DELETE issues/5/labels/y%20z", "GRAPHQL graphql", "PATCH pulls/7", "PATCH issues/5", "POST issues", "DISPATCH pipeline-fix.yml", "PUT pulls/7/merge"])
+  assert.deepEqual(short(calls), ["POST issues/5/comments", "POST statuses/abc", "POST issues/5/labels", "DELETE issues/5/labels/y%20z", "GRAPHQL graphql", "PATCH pulls/7", "PATCH issues/5", "POST issues", "DISPATCH pipeline-fix.yml", "PUT pulls/7/merge", "PATCH issues/5"])
+  assert.deepEqual(calls[10].body, { title: "t2", body: "b2" })
   assert.deepEqual(calls[4].body.variables, { id: "NODE7" })
   assert.match(calls[4].body.query, /markPullRequestReadyForReview/)
   assert.deepEqual(calls[6].body, { state: "closed", state_reason: "not_planned" })
@@ -390,7 +392,7 @@ test("gather: what cannot be read. Runs unreadable = nothing dispatched; the cor
 })
 
 test("the lists are carried out in the documented order and every list has its wording", async () => {
-  assert.deepEqual(ORDER, ["markRows", "applyAnswers", "applyDefaults", "merge", "closeItems", "labels", "closeIssues", "openItems", "nudges", "dispatchReview", "dispatchRework", "dispatchFix"])
+  assert.deepEqual(ORDER, ["markRows", "applyAnswers", "applyDefaults", "merge", "closeItems", "refreshItems", "labels", "closeIssues", "openItems", "nudges", "notices", "dispatchReview", "dispatchRework", "dispatchFix"])
   const { TEXT } = await import("../cli/roles/tick.mjs")
   const { emptyPlan } = await import("../cli/core/plan.mjs")
   for (const list of ORDER) {

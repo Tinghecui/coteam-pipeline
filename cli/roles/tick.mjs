@@ -25,7 +25,7 @@ export { TEXT }
 // The order the lists are carried out in. Bookkeeping first, decisions next, then what
 // follows from them; dispatches last, so a round that breaks half-way starts nothing it has
 // not recorded.
-export const ORDER = ["markRows", "applyAnswers", "applyDefaults", "merge", "closeItems", "labels", "closeIssues", "openItems", "nudges", "dispatchReview", "dispatchRework", "dispatchFix"]
+export const ORDER = ["markRows", "applyAnswers", "applyDefaults", "merge", "closeItems", "refreshItems", "labels", "closeIssues", "openItems", "nudges", "notices", "dispatchReview", "dispatchRework", "dispatchFix"]
 
 const names = (labels) => (labels || []).map((l) => (typeof l === "string" ? l : l?.name)).filter(Boolean)
 const firstLine = (e) => String(e?.message || e).split("\n")[0].slice(0, 300)
@@ -211,6 +211,8 @@ async function step(a, { gh, config }) {
       return gh.patch(`pulls/${a.pr}`, { state: "closed" })
     case "closeIssue":
       return gh.patch(`issues/${a.issue}`, { state: "closed", state_reason: a.reason || "completed" })
+    case "editIssue":
+      return gh.patch(`issues/${a.issue}`, { title: a.title, body: a.body })
     case "openIssue":
       return gh.post("issues", { title: a.title, body: a.body, labels: a.labels })
     case "dispatch":

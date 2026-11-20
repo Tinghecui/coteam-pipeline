@@ -421,3 +421,27 @@ test("every module under cli/ parses and can be imported", async () => {
     await assert.doesNotReject(import(pathToFileURL(file).href), `${file} cannot be imported`)
   }
 })
+
+test("gather: a PR whose mergeability GitHub is still computing is read again after a short wait", async () => {
+  const w = world()
+  w.prs = [pull(40, "pipeline/2-ok", "h40")]
+  const { io, reads } = fakeIo(w)
+  let n = 0
+  const get = io.gh.get
+  io.gh.get = (path) => {
+    if (path === "pulls/40") return { ...get(path), state: "open", mergeable: ++n < 3 ? null : true }
+    return get(path)
+  }
+  const sleeps = []
+  io.proc = { run: (cmd, args) => (sleeps.push([cmd, ...args]), { rc: 0, stdout: "", stderr: "" }) }
+  const { state } = await gather(io)
+  assert.equal(state.prs[0].mergeable, true)
+  assert.equal(n, 3)
+  assert.equal(sleeps.length, 2)
+  assert.ok(sleeps.every((s) => s[0] === "sleep"))
+  // still unknown after the last try: left null, the round goes on
+  n = -100
+  const again = await gather(io)
+  assert.equal(again.state.prs[0].mergeable, null)
+  assert.ok(reads.length > 0)
+})

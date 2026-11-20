@@ -12,6 +12,9 @@ import { GHOST_RUN_MS, FIX_WORKFLOW, REVIEW_WORKFLOW, emptyPlan, planTick } from
 import { parseSpec } from "../core/spec.mjs"
 import { TICK_TEXT as TEXT } from "../core/text.mjs"
 
+const MERGEABLE_TRIES = 3
+const MERGEABLE_WAIT_S = 4
+
 export const CLOSED_PR_DAYS = 7
 const RUNS_PER_PAGE = 50
 const CLOSED_PR_PAGES = 3
@@ -59,7 +62,14 @@ export async function gather(io) {
   const otherPrs = openPrs.filter((p) => !ours(p)).map((p) => ({ number: p.number, title: p.title || "", body: p.body || "", head: { ref: p.head?.ref || "" } }))
   for (const p of openPrs.filter(ours)) {
     // The list does not say whether the PR can be merged; the single PR does.
-    const full = await gh.get(`pulls/${p.number}`)
+    // `mergeable` is null while GitHub computes it in the background, which it starts on
+    // this very read; that happens after every push to the base branch. Waiting a few
+    // seconds here saves a whole round: the next event may not come for half an hour.
+    let full = await gh.get(`pulls/${p.number}`)
+    for (let i = 0; i < MERGEABLE_TRIES && full.mergeable == null && full.state === "open"; i++) {
+      io.proc.run("sleep", [String(MERGEABLE_WAIT_S)])
+      full = await gh.get(`pulls/${p.number}`)
+    }
     const sha = full.head?.sha || p.head?.sha || ""
     const status = sha ? await gh.get(`commits/${sha}/status?per_page=100`) : { statuses: [] }
     const checks = sha ? await gh.get(`commits/${sha}/check-runs?filter=latest&per_page=100`) : { check_runs: [] }

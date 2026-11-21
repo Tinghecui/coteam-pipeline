@@ -18,7 +18,9 @@
 // Every module of the engine is imported here, statically, before anything runs. The agent
 // that `fix` and `review` start runs as the same user and can write to the engine's checkout;
 // whatever the engine does after the agent (pushing, commenting, renewing the bot token) must
-// run code that was loaded before it. So: no dynamic import() anywhere under cli/, and no
+// run code that was loaded before it. (The workflows run the agent in a job of its own, which
+// holds no bot token at all; this rule is what protects a whole `fix` or `review` run in one
+// process, and costs nothing to keep.) So: no dynamic import() anywhere under cli/, and no
 // child process that is started from a file of the engine (test/main.test.mjs checks both).
 import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -29,7 +31,8 @@ import { BUNDLE_FILE, MAX_RESULT_BYTES, openOrder, ORDER_FILE, RESULT_FILE, seal
 import { ALWAYS_FORBIDDEN, forbiddenHits } from "./core/policy.mjs"
 import { checkSpec } from "./core/spec.mjs"
 import { appLogin, mintAppToken } from "./io/app-token.mjs"
-import { makeIo } from "./io/real.mjs"
+import { run as runProc } from "./io/proc.mjs"
+import { HOME, makeIo } from "./io/real.mjs"
 import * as doctorRole from "./roles/doctor.mjs"
 import * as fixRole from "./roles/fix.mjs"
 import * as initRole from "./roles/init.mjs"
@@ -141,7 +144,8 @@ async function role(name, opts, { env, cwd, out }) {
 // One of the three parts of an agent role, as one job of the workflow runs it. What passes
 // between the jobs is files in two directories: the order (prepare -> agent, publish) and
 // the result (agent -> publish).
-//   prepare  writes the order and reports `go` and the order's digest through GITHUB_OUTPUT.
+//   prepare  writes the order and reports `go`, the order's digest and the engine's own
+//            commit through GITHUB_OUTPUT.
 //            go=false: the run ended here and the other two jobs are skipped.
 //   agent    reads the order, leaves the result (and, for the executor, the bundle). It
 //            always exits 0 when it got that far: what happened is for publish to say.
@@ -172,7 +176,11 @@ async function rolePart(name, part, opts, flags, { env, cwd, out }) {
       mkdirSync(orderDir, { recursive: true })
       writeFileSync(join(orderDir, ORDER_FILE), sealed.text)
     }
-    if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `go=${first.go ? "true" : "false"}\norder_sha256=${sealed?.sha256 || ""}\n`)
+    // The commit of the engine this job runs: the other two jobs check out the same one, so
+    // a branch or tag that moves in the middle of a run cannot give them another engine.
+    const head = runProc("git", ["-C", HOME, "rev-parse", "HEAD"]).stdout.trim()
+    const engine = /^[0-9a-f]{40,64}$/.test(head) ? head : ""
+    if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `go=${first.go ? "true" : "false"}\norder_sha256=${sealed?.sha256 || ""}\nengine_sha=${engine}\n`)
     return first.go ? done({ ok: true, go: true, order_sha256: sealed.sha256 }) : done(first.result)
   }
   if (part === "agent") {

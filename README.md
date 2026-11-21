@@ -25,6 +25,11 @@ GitHub App, the installation pull request, the doctor, and a first issue through
 approved pull request. The test suite drives the same roles against an in-memory GitHub, a
 scripted agent and local git repositories.
 
+After `v0.1.0`, the executor and the reviewer were each split into three jobs, so that
+the bot's key is never on the runner the agent ran on (see
+[Threat model and known gaps](docs/install.md#threat-model-and-known-gaps)). That is on
+`main` and has run on the demonstration repository; the `v0.1.0` tag does not have it.
+
 What has not been verified: a codebase of real size, or any stack but a small Node
 project; a repository owned by an organisation; answers by people who are not owners and
 an unavailable model (both only simulated). Nobody has tried to attack it. Expect things
@@ -67,10 +72,12 @@ GitHub Actions.
 2. The **dispatcher** (`tick`) runs on repository events and on a schedule. It reads the
    issues, pull requests, checks and decisions, and starts whatever is due. It never runs
    an agent.
-3. The **executor** (`fix`) runs the agent in a checkout of your repository. The agent is
-   given the model key and no GitHub token; the engine, not the agent, commits, pushes and
-   opens the pull request.
-4. The **reviewer** (`review`) is a second agent with read-only tools. It approves,
+3. The **executor** (`fix`) runs the agent in a checkout of your repository, in a job that
+   holds the model key and nothing it could write to GitHub with. A separate job, which
+   never runs the agent or your code, takes the files it changed, checks them, and does
+   the commit, the push and the pull request with the bot's key.
+4. The **reviewer** (`review`) is a second agent with read-only tools, split over jobs the
+   same way. It approves,
    rejects (the pull request goes back to the executor, a limited number of times) or asks
    for a person, and gives the change a risk level from 0 to 3. The paths a change touches
    set the lowest level it can get.
@@ -83,8 +90,9 @@ GitHub Actions.
    one ledger branch. `mode: record` does everything except merge, and is where you start.
 
 Read [Threat model and known gaps](docs/install.md#threat-model-and-known-gaps) before
-pointing it at a repository where people you do not know can write issues: the agent is
-limited in what it is handed, not sandboxed.
+pointing it at a repository where people you do not know can write issues: the agent's
+job is kept away from the bot's key, but it holds your model key and a copy of your code,
+and it is not a sandbox.
 
 ## Documents
 

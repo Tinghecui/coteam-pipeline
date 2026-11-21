@@ -277,23 +277,43 @@ To stop everything at once, set `mode: off`, or disable the three workflows in t
 
 ## What runs where and what it can access
 
+The executor and the reviewer each run as **three jobs on three separate runners**. The
+job that runs the agent never holds the bot's key, and the jobs that hold the bot's key
+never run the agent or any code from your repository. (This came after `v0.1.0`: that tag
+still runs each of them as one job. See "Known gaps" below for what that means.)
+
 | What | Where it runs | What it holds |
 |---|---|---|
 | Dispatcher (`pipeline-tick`) | A GitHub-hosted runner in your repository's Actions | The App key. No model key. Never runs the agent and never checks out a pull request's code. |
-| Executor (`pipeline-fix`) | Same | The engine process holds the App key and mints a one-hour token limited to this repository. The agent it starts is handed the Anthropic key and nothing else (but see the threat model below). |
-| Reviewer (`pipeline-review`) | Same | As the executor, but the agent has read-only tools and the pull request's code is only read, never run. |
+| Executor and reviewer, job 1: `prepare` | Its own runner | The App key. No model key. Reads the issue and the pull request, decides whether the run may start, writes the work order (the prompt, the commits to start from). Runs the engine and git; nothing from your repository is executed. |
+| Executor and reviewer, job 2: the agent | Its own runner | The Anthropic key, and the workflow's built-in token limited to reading this repository's contents (that is how it fetches the code). **No App key**: this job has nothing it could push, comment or merge with. Runs `stack.setup`, the agent and `stack.check`. |
+| Executor and reviewer, job 3: `publish` | Its own runner | The App key. No model key. Takes what job 2 left, checks it, and writes to GitHub. Runs the engine and git; never the agent, never your code. |
 | The engine's code | Checked out from the engine repository at the ref you pinned | Nothing of its own. No server, no telemetry. |
 
-- **The built-in `GITHUB_TOKEN`** has `contents: read` in all three workflows and is used
-  only to check out your repository and the engine. It is not passed to the engine.
-- **The agent is handed no GitHub token.** The engine removes every `GITHUB_*`,
-  `ACTIONS_*`, `GH_*` and `PIPELINE_*` variable, and anything named like a secret, from the
-  agent's environment, and the shell commands from your config (`stack.setup`,
-  `stack.check`) run without them too. Pushing, commenting and opening pull requests are
-  done by the engine after the agent has exited. This limits what the agent is handed; it
-  is **not a sandbox**. What that means, and what is still open in 0.1, is in
-  [Threat model and known gaps](#threat-model-and-known-gaps) below. Read it before you
-  point the pipeline at a repository where strangers can write issues.
+- **What crosses from the agent's job to the publishing job** is two files, and the
+  publishing job treats both as written by a stranger:
+  - for the executor, a git bundle. Only the *tree* (the files) is taken from it. The
+    commit, its parents, its author and its message are made by the publishing job; the
+    changed paths are read from that tree there, and the forbidden paths are checked there.
+    Nothing from the bundle is checked out or run.
+  - a small JSON result (the agent's summary, the usage figures, or why it stopped). It is
+    cut down to the known fields, validated against the schema, and its text can not write
+    one of the pipeline's hidden marks.
+  For the reviewer there is no bundle, only the reviewer's structured output; the risk
+  level by path, the list of changed paths and the base commit are measured by job 1.
+- **The work order** goes from job 1 to job 3 as a file that the agent's runner could have
+  replaced. Job 1 reports the file's SHA-256 through its job outputs, which other jobs
+  cannot change, and job 3 refuses an order that does not match.
+- **The built-in `GITHUB_TOKEN`** has `contents: read` in all three workflows. It checks
+  out your repository and the engine, and in the agent's job the engine fetches the code
+  with it. It cannot write anywhere.
+- **Inside the agent's job** the engine still removes every `GITHUB_*`, `ACTIONS_*`, `GH_*`
+  and `PIPELINE_*` variable, and anything named like a secret, from the agent's
+  environment and from the shell commands of your config (`stack.setup`, `stack.check`).
+  The job is **not a sandbox**: the agent can do there whatever your own test suite could.
+  What that leaves open is in [Threat model and known gaps](#threat-model-and-known-gaps)
+  below. Read it before you point the pipeline at a repository where strangers can write
+  issues.
 - **Text from issues and comments never reaches a shell.** The workflows pass only numbers
   to the engine, through environment variables, and the engine rejects anything that is not
   a whole number. Issue text goes to the agent inside the prompt, marked as untrusted.
@@ -302,26 +322,33 @@ To stop everything at once, set `mode: off`, or disable the three workflows in t
   repository's admins and maintainers if that list is empty.
 - **What the agent cannot change**: the paths in `risk.forbidden` (by default the
   workflows, `.coteam/` and the agent instruction files). A change that touches them is
-  discarded before it is pushed, and the App has no Workflows permission as a second lock.
+  refused by the publishing job before anything is pushed, and the App has no Workflows
+  permission as a second lock.
 - **Pull requests from forks** are ignored by all three workflows.
 - **Where your code goes**: to Anthropic's API, as part of the agent's work, under your API
-  key and your agreement with Anthropic. Nowhere else.
-- **Third-party actions**: only `actions/checkout` and `actions/setup-node`, referenced by
-  major version. To pin them, and the engine, by commit SHA, fork the engine repository, pin
-  them in its three reusable workflows, and point your callers (and `engine_repository`) at
-  the fork. The Claude Code CLI is installed from npm at the exact version given by the
-  `claude_code_version` input.
+  key and your agreement with Anthropic. Between the jobs, the work order (issue text and
+  the prompt) and the result (the change) are stored for one day as artifacts of the
+  workflow run, readable by whoever can read the repository's Actions. Nowhere else.
+- **Third-party actions**: only `actions/checkout`, `actions/setup-node`,
+  `actions/upload-artifact` and `actions/download-artifact`, referenced by major version.
+  To pin them, and the engine, by commit SHA, fork the engine repository, pin them in its
+  three reusable workflows, and point your callers (and `engine_repository`) at the fork.
+  The Claude Code CLI is installed from npm at the exact version given by the
+  `claude_code_version` input, in the agent's job only.
 
 ## Threat model and known gaps
 
-Read this as a statement of design, not of experience: 0.1 has run on one demonstration
-repository, and nobody has tried to attack it.
+Read this as a statement of design, not of experience: the pipeline has run on one
+demonstration repository, and nobody has tried to attack it.
 
 **What is assumed.** The agent reads text that an attacker may have written: an issue, a
 comment, a file in the repository, the output of a test. Such text can talk the agent into
 doing something else than the task (prompt injection). So the agent is treated as code that
-may turn hostile in the middle of a run. The people who can label issues, the `owners`,
-the repository's admins, the engine at the ref you pinned, GitHub and Anthropic are trusted.
+may turn hostile in the middle of a run, and so is **the whole runner it ran on**: on
+GitHub-hosted runners the job's user has passwordless `sudo`, so anything on that machine
+(the engine's files, its memory, `git`, `node`) may have been read or replaced by the time
+the job ends. The people who can label issues, the `owners`, the repository's admins, the
+engine at the ref you pinned, GitHub and Anthropic are trusted.
 
 **What the pipeline has to protect.**
 
@@ -337,21 +364,26 @@ the repository's admins, the engine at the ref you pinned, GitHub and Anthropic 
   agent until someone with triage access puts the work label on it. Comments by strangers
   are never taken as answers to decisions, and marks in comments are believed only from the
   pipeline's own login.
-- *The agent's environment is scrubbed.* No `GITHUB_*`, `ACTIONS_*`, `GH_*`, `PIPELINE_*`
-  variable and nothing named like a secret reaches the agent or the `stack.*` commands. On
-  Node 22.15 or newer (the workflows install Node 22) the engine also re-executes itself
-  at start, so that the environment it was started with, which other processes of the
-  same user can read for as long as it lives, never held the key.
-- *No token on a command line, in git's config or left on disk.* Tokens reach `git` and
-  `gh` through the environment of those child processes only; the checkouts are made with
-  `persist-credentials: false`, and credentials found in the checkout's git config are
-  removed before the agent starts. (The re-execution above hands the secrets over in a
-  file only the runner's user can read; it is deleted as soon as it is read, before any
-  role starts.)
-- *The engine loads no code from disk after the agent has run.* The agent runs as the same
-  user and can rewrite the engine's checkout. Every module is loaded before the agent
-  starts, and the one child process that runs engine code afterwards (renewing the bot
-  token, which lasts an hour, after 40 minutes) is given that code from memory.
+- *The bot's key is never on a machine the agent has touched.* The agent runs in a job of
+  its own that holds no GitHub credential at all beyond a token that can read this
+  repository's contents. The App key is given to two other jobs, on other runners, which
+  never run the agent, never install its CLI and never execute anything from the
+  repository. A job cannot read another job's secrets or memory.
+- *The publishing job believes nothing the agent's job says.* It takes a git tree and a
+  few fields of text. It makes the commit itself, with the parents the work order names;
+  it rebuilds the tree through git's index, which refuses a tree no checkout may contain
+  (a `.git` directory in it, a malformed tree); it reads the changed paths from the tree
+  and applies the forbidden paths and the risk levels to them; it validates the structured output against the schema; it never checks
+  the tree out, so no file of the change exists on that runner, let alone runs. A result
+  that is missing or malformed ends the run as failed.
+- *The work order cannot be swapped.* Its SHA-256 travels through the job outputs of the
+  job that wrote it.
+- *The agent's environment is scrubbed*, inside its own job as well: no `GITHUB_*`,
+  `ACTIONS_*`, `GH_*`, `PIPELINE_*` variable and nothing named like a secret reaches the
+  agent or the `stack.*` commands.
+- *No token on a command line, in git's config or left on disk.* Tokens reach `git`
+  through the environment of that child process only; the checkouts are made with
+  `persist-credentials: false`.
 - *A deny list in the agent's tools.* `git push`, `git commit`, `gh`, `curl`, `wget` and
   web access are refused by name. This stops accidents, not an attacker: any interpreter on
   the runner can open a network connection.
@@ -360,56 +392,54 @@ the repository's admins, the engine at the ref you pinned, GitHub and Anthropic 
   **Administration** permission: even with the key, workflow files cannot be changed and
   secrets cannot be read.
 - *Forbidden paths.* A change that touches `risk.forbidden` (by default the workflows,
-  `.coteam/` and the agent instruction files) is discarded by the engine before anything
-  is pushed. The config is always read from the base branch, never from a pull request.
+  `.coteam/` and the agent instruction files) is refused before anything is pushed. The
+  config is always read from the base branch, never from a pull request.
 - *Review and CI before a merge.* A second agent with read-only tools reviews the pull
   request; the paths decide the lowest risk level and the reviewer can only raise it; with
   `mode: on` nothing merges while a check of your CI has failed or is still running. The
   pipeline's own jobs are not counted as CI.
 
-**Known gaps in 0.1.**
+**Known gaps.**
 
 - **The agent holds the model key, by necessity**, and the runner has network access. An
   agent that was talked into it can send the key anywhere. Use a key that is only for the
   pipeline, set a spend limit on it, and rotate it if a run looks wrong.
-- **The agent can reach the bot key if it digs for it.** The agent runs in the same job
-  and as the same OS user as the engine, and on GitHub-hosted runners that user has
-  passwordless `sudo`. The engine process holds the App's private key and the current
-  token in memory for the whole run. Nothing hands them to the agent, but an agent that
-  actively looks (reading the parent process's memory as root, for example, replacing
-  `git`, `gh` or `node` on the runner with a program of its own, or leaving behind a
-  configuration file that one of those tools obeys when the engine runs it later) can get
-  them. With the bot
-  key it could do everything listed under 1. above to this one repository, for as long as
-  the key is valid: push to an unprotected branch, set the `pipeline/review` status on its
-  own pull request, merge it.
+- **The agent's job can read your code and send it anywhere.** It has the checkout and a
+  network. On a private repository, a successful prompt injection can leak the source.
+- **What the agent's job reports about itself cannot be checked.** That the checks of
+  `stack.check` passed, how many turns the agent took and what the run cost are its own
+  word. So: your CI on the pull request is the test run that counts, not the executor's;
+  and a hostile run could under-report its cost to the pipeline's budget. The spend limit
+  on the key at Anthropic does not depend on the pipeline's arithmetic.
 - **The reviewer reads what the executor wrote.** The pull request's text and code are
   input to the reviewing agent and can try to talk it into approving. The path levels, your
   CI and (if you set them up) branch protection rules do not depend on the reviewer's opinion.
-- **The agent's work directory is your repository's checkout**, with your project's
-  dependencies installed by `stack.setup`. Whatever those scripts and the test suite can do
-  on a runner, the agent can do.
+- **The agent's job shares what every job of a workflow run shares.** It can replace the
+  run's artifacts (which is why the order is checked by digest and the result is treated
+  as hostile) and it can write to the repository's Actions cache from a run on the base
+  branch. If your own CI restores caches, a hostile run could plant one. The pipeline's
+  own jobs use no cache.
+- **`v0.1.0` does not have the three jobs.** There the agent runs in the same job and as
+  the same OS user as the engine, which holds the App key in memory, and that user has
+  passwordless `sudo`: an agent that digs for the key can get it. If you installed
+  `v0.1.0`, move your three workflow files to a release that has the split.
+- **A self-hosted runner undoes the separation** if the three jobs land on the same
+  machine and that machine is not wiped between jobs. Use GitHub-hosted runners, or
+  ephemeral ones. (The lighter alternative to separate jobs, running the agent as a
+  separate unprivileged OS user on one machine, was not built: with passwordless `sudo`
+  on the hosted runners it would have protected nothing there.)
 
-**Planned hardening** (not in 0.1): run the agent in a separate job, or at least as a
-separate unprivileged OS user, that holds no GitHub credential at all, and let a second
-job, which never runs the agent or code it wrote, validate its output (the diff, the
-forbidden paths, the structured result) and publish it. The bot key is then never on a
-machine the agent has touched.
+**What to do with this:**
 
-**Until then:**
-
-- Use 0.1 on **private repositories**, or on public ones only where the people who can
-  write issues and comments are people you trust, and read an outsider's issue before you
-  label it: its text becomes instructions to the agent.
-- Protect the base branch and require pull requests and your CI checks. A stolen bot key
-  then cannot push to the base branch directly, and whatever it merges has at least passed
-  your CI. (It could still set the pipeline's own review status; a rule that requires an
-  approving review from a person closes that too, at the price of the bot no longer
-  merging by itself.)
+- On a **public repository**, read an outsider's issue before you label it: its text
+  becomes instructions to the agent, which holds your model key and a copy of your code.
+- Protect the base branch and require pull requests and your CI checks. Then nothing the
+  pipeline pushes reaches the base branch without passing your CI. (A rule that requires
+  an approving review from a person goes further, at the price of the bot no longer merging
+  by itself.)
 - Keep `mode: record` until you have watched the pipeline work, and do not add deploy
   keys, cloud credentials or production access to the pipeline's workflows.
-- If a run looks wrong, generate a new private key for the App (and delete the old one)
-  and rotate the Anthropic key.
+- If a run looks wrong, rotate the Anthropic key. The App key was not on that machine.
 
 ## Known limits of 0.1
 

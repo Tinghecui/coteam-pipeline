@@ -85,6 +85,7 @@ jobs:
     outputs:
       go: ${{ steps.prepare.outputs.go }}
       order_sha256: ${{ steps.prepare.outputs.order_sha256 }}
+      engine_sha: ${{ steps.prepare.outputs.engine_sha }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -155,7 +156,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.engine_repository }}
-          ref: ${{ inputs.engine_ref }}
+          # The commit the prepare job ran, so the three jobs run one and the same engine.
+          ref: ${{ needs.prepare.outputs.engine_sha || inputs.engine_ref }}
           path: engine
           fetch-depth: 1
           persist-credentials: false
@@ -209,7 +211,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.engine_repository }}
-          ref: ${{ inputs.engine_ref }}
+          # The commit the prepare job ran, so the three jobs run one and the same engine.
+          ref: ${{ needs.prepare.outputs.engine_sha || inputs.engine_ref }}
           path: engine
           fetch-depth: 1
           persist-credentials: false

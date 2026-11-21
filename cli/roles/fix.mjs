@@ -601,6 +601,12 @@ function land(c, order, out, bundle, dir) {
   const got = git.try(["-c", "transfer.fsckObjects=true", "fetch", "-q", "--no-tags", bundle, `+${OUT_REF}:${IN_REF}`])
   if (got.rc !== 0) return failed(TEXT.badBundle, tail(got, 600))
   const tree = G(["rev-parse", `${IN_REF}^{tree}`]).trim()
+  // The tree is taken through git's index and written out again before it is believed. The
+  // index refuses paths no checkout may contain (".git" and its look-alikes, "..", an empty
+  // name), and a tree that does not come back as itself was not a well-formed one: the path
+  // checks below read names out of it and must be able to rely on what they read.
+  const sound = git.try(["-c", "core.protectHFS=true", "-c", "core.protectNTFS=true", "read-tree", tree])
+  if (sound.rc !== 0 || G(["write-tree"]).trim() !== tree) return failed(TEXT.badTree, tail(sound, 600))
   const problem = treeProblem(git, config, order, tree)
   if (problem) return problem
 

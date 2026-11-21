@@ -35,7 +35,7 @@ permissions:
 
 jobs:
   pipeline:
-    # Do not add deploy keys or cloud credentials to this workflow: the agent runs in this job.
+    # Do not add deploy keys or cloud credentials to this workflow: one of its jobs runs the agent.
     uses: Tinghecui/coteam-pipeline/.github/workflows/fix.yml@v0.1.0
     with:
       engine_ref: v0.1.0

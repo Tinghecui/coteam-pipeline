@@ -780,6 +780,26 @@ test("publish looks at the tree it was handed: a forbidden path the agent's mach
   assert.equal(w.marks("claim", 5)[0].released, true)
 })
 
+test("a tree no checkout may contain (a .git directory in it) is refused by publish, whatever the agent's machine says", async () => {
+  for (const name of [".git", ".GIT", "sub"]) {
+    const w = world()
+    const { res } = await parts(w, { issue: 5 }, (h) => {
+      const blob = sh(w.work, "rev-parse", "main:README.md")
+      const mktree = (lines) => execFileSync("git", ["mktree"], { cwd: w.work, input: lines.join("\n") + "\n", encoding: "utf8" }).trim()
+      const inner = mktree([`100644 blob ${blob}\tconfig`])
+      const hidden = name === "sub" ? mktree([`040000 tree ${inner}\t.git`]) : inner
+      const tree = mktree([`100644 blob ${blob}\tREADME.md`, `040000 tree ${hidden}\t${name}`])
+      const carrier = sh(w.work, "commit-tree", tree, "-p", h.order.baseSha, "-m", "x")
+      sh(w.work, "update-ref", "refs/pipeline/out", carrier)
+      rmSync(h.bundle)
+      sh(w.work, "bundle", "create", "-q", h.bundle, "refs/pipeline/out", `^${h.order.baseSha}`)
+    })
+    assert.equal(res.outcome, "failed", name)
+    assert.match(res.reason, /not a tree git accepts/, name)
+    assert.deepEqual(w.remoteBranches(), ["main"], name)
+  }
+})
+
 test("publish in a rework: the parents are the PR head and the base, never what the bundle says", async () => {
   const w = world()
   const sha = withPr(w)

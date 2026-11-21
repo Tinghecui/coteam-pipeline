@@ -116,7 +116,7 @@ test("three jobs: the bot's key and the agent never share a machine", () => {
       assert.match(scripts[0], /^node "\$GITHUB_WORKSPACE\/engine\/cli\/main\.mjs" /, `${f.path} ${id}`)
     }
     // prepare vouches for the order through its outputs; publish checks it, and runs whatever became of the agent
-    assert.match(prepare, /^    outputs:\n      go: \$\{\{ steps\.prepare\.outputs\.go \}\}\n      order_sha256: \$\{\{ steps\.prepare\.outputs\.order_sha256 \}\}$/m, f.path)
+    assert.match(prepare, /^    outputs:\n      go: \$\{\{ steps\.prepare\.outputs\.go \}\}\n      order_sha256: \$\{\{ steps\.prepare\.outputs\.order_sha256 \}\}\n      engine_sha: \$\{\{ steps\.prepare\.outputs\.engine_sha \}\}$/m, f.path)
     assert.match(publish, /^    needs: \[prepare, agent\]$/m, f.path)
     assert.match(publish, /^    if: \$\{\{ always\(\) && needs\.prepare\.outputs\.go == 'true' \}\}$/m, f.path)
     assert.match(publish, /ORDER_SHA256: \$\{\{ needs\.prepare\.outputs\.order_sha256 \}\}/, f.path)
@@ -181,7 +181,9 @@ test("both checkouts leave no credentials behind and the engine goes to its own 
       const t = j.text
       assert.equal((t.match(/uses: actions\/checkout@/g) || []).length, 2, `${f.path} ${j.id}`)
       assert.equal((t.match(/persist-credentials: false/g) || []).length, 2, `${f.path} ${j.id}`)
-      assert.match(t, /repository: \$\{\{ inputs\.engine_repository \}\}\n\s+ref: \$\{\{ inputs\.engine_ref \}\}\n\s+path: engine\n/, `${f.path} ${j.id}`)
+      // the first job takes the ref it was given; the other two take the commit the first one ran
+      const ref = ["agent", "publish"].includes(j.id) ? "needs.prepare.outputs.engine_sha || inputs.engine_ref" : "inputs.engine_ref"
+      assert.ok(t.includes(`repository: \${{ inputs.engine_repository }}\n          ref: \${{ ${ref} }}\n          path: engine\n`), `${f.path} ${j.id}`)
       assert.match(t, /path: repo\n/, `${f.path} ${j.id}`)
       assert.match(t, /working-directory: repo\n/, `${f.path} ${j.id}`)
       assert.match(t, /node-version: 22\n/, `${f.path} ${j.id}`)
@@ -441,12 +443,18 @@ test("the documents agree with the code about PIPELINE_BOT and about the agent's
   assert.ok(!/Without it, anyone who can comment could forge a mark/.test(install))
   for (const f of REUSABLE) assert.match(f.text, /bot_login:\n\s+description: "Optional \(repository variable PIPELINE_BOT\)\. The engine works out the login the App writes as by itself/, f.path)
   assert.match(readFileSync(join(ROOT, "templates/workflows/pipeline-tick.yml"), "utf8"), /The variable is optional/)
-  // the gap is named in both places, with the plan
+  // the three jobs are described in both places, with why the lighter way out was not taken
   for (const [name, text] of [["install.md", install], ["design-0.1.md", design]]) {
     assert.match(text, /passwordless\s+`?sudo`?/, name)
     assert.match(text, /separate\s+unprivileged OS user/, name)
-    assert.match(text, /holds no GitHub credential at all/, name)
+    assert.match(text, /`v0\.1\.0`/, name)
   }
-  assert.match(install, /private repositories/)
-  assert.match(design.slice(design.indexOf("## Not in 0.1"), design.indexOf("## Roles and io")), /Isolation of the agent from the bot's credentials/)
+  assert.match(install, /holds no GitHub credential at all beyond a token that can read this\s+repository's contents/)
+  assert.match(install, /\*\*What the agent's job reports about itself cannot be checked\.\*\*/)
+  assert.match(install, /\*\*`v0\.1\.0` does not have the three jobs\.\*\*/)
+  assert.match(design.slice(design.indexOf("## Three jobs"), design.indexOf("## Roles and io")), /Isolation of the agent from the bot's credentials/)
+  // the outcomes the design lists for the agent's job are the ones publish accepts
+  const fixSource = readFileSync(join(ROOT, "cli/roles/fix.mjs"), "utf8")
+  const accepted = JSON.parse(/const AGENT_OUTCOMES = new Set\((\[[^\]]+\])\)/.exec(fixSource)[1])
+  for (const o of accepted) assert.match(design.slice(design.indexOf("## Three jobs")), new RegExp(`\`${o}\``), o)
 })

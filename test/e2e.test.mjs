@@ -368,7 +368,8 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
     const no = (stderr = "") => ({ rc: 1, stdout: "", stderr })
     const z = (files) => files.map((f) => `${f}\0`).join("")
     const exec = (args0) => {
-      const args = args0[0] === "-c" ? args0.slice(2) : args0
+      let args = args0
+      while (args[0] === "-c") args = args.slice(2)
       const a = args.join(" ")
       let m
       if (a.startsWith("config --local")) return no()
@@ -441,6 +442,11 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
         const files = w.branches.get(w.prs.get(d.reviewPr).head.ref).files
         if (a.includes("--name-only")) return ok(z(files))
         return ok(a.includes("--stat") ? `${files.map((f) => ` ${f} | 2 +-`).join("\n")}\n ${files.length} files changed\n` : `diff --git ${files.join(" ")}\n`)
+      }
+      // publish takes the tree it was handed through the index and back
+      if (args[0] === "read-tree") {
+        Object.assign(d, { tree: args[1], changes: [] })
+        return ok()
       }
       // the executor's tree: the working tree as the agent left it
       if (a === "write-tree") {

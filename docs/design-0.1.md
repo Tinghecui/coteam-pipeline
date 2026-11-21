@@ -196,13 +196,16 @@ An answer is a comment on the decision item starting with an option letter (`A`,
 
 ## Roles
 
-- `fix`: precheck (budget, claim, cooldown) -> claim -> checkout base, new branch -> run
-  `stack.setup` -> run `claude -p` with the executor prompt, tools unrestricted, **no GitHub
-  token in its environment** -> validate structured output (`prompts/executor.schema.json`)
-  -> forbidden-path check -> run `stack.check` -> push with the bot token, open PR (draft if
-  path level is 3) -> ledger line -> release claim. Rework mode: same on the existing branch.
-- `review`: checkout the PR merge ref read-only -> run `claude -p` with read-only tools ->
-  `reviewDecision` -> post the `review` mark comment, commit status, level label -> ledger line.
+- `fix`: precheck (budget, claim, cooldown) -> claim -> work order | checkout base, new
+  branch -> run `stack.setup` -> run `claude -p` with the executor prompt, tools
+  unrestricted, **no GitHub token in its environment** -> validate structured output
+  (`prompts/executor.schema.json`) -> forbidden-path check -> run `stack.check` -> hand the
+  tree over | check the tree again, commit, push with the bot token, open PR (draft if path
+  level is 3) -> ledger line -> release claim. Rework mode: same on the existing branch.
+  The bars are the job boundaries, see "Three jobs" below.
+- `review`: fetch the PR merge ref, path level, prompt | check the merge commit out
+  read-only -> run `claude -p` with read-only tools | `reviewDecision` -> post the `review`
+  mark comment, commit status, level label -> ledger line.
 - `tick`: above.
 - `doctor [--fix]`: `cli/roles/doctor.mjs`, the installation check (config, labels, the
   three caller workflows, secret and variable names, what the token can read and may
@@ -215,18 +218,75 @@ An answer is a comment on the decision item starting with an option letter (`A`,
 Red-check, responder and rule learning, follow-up digest, acceptance on preview URLs,
 project boards, a second reviewer model, conflict auto-merge without the agent (a rework with a conflict leaves it to the agent and records a real merge commit), other languages.
 
-Isolation of the agent from the bot's credentials. In 0.1 the agent runs in the same job
-and as the same OS user as the engine, which holds the App's private key; on GitHub-hosted
-runners that user has passwordless sudo, so an agent that was prompt-injected and actively
-digs (reading the engine process's memory, replacing a binary the engine runs) can reach
-the key. Planned: run the agent in a separate job (or as a separate unprivileged OS user)
-that holds no GitHub credential at all, with a second job that validates and publishes its
-output. What 0.1 does instead, and what it recommends until then, is in docs/install.md,
-"Threat model and known gaps".
+## Three jobs (added after `v0.1.0`)
+
+Isolation of the agent from the bot's credentials. In `v0.1.0` the agent ran in the same
+job and as the same OS user as the engine, which holds the App's private key; on
+GitHub-hosted runners that user has passwordless sudo, so an agent that was
+prompt-injected and actively digs could reach the key. The two ways out were a separate
+job, or a separate unprivileged OS user on the same machine; with sudo open to everyone on
+the hosted runners only the first protects anything, so that is what was built.
+
+`fix` and `review` are three functions each, and `.github/workflows/{fix,review}.yml` run
+each in a job of its own (`cli/core/handoff.mjs` holds what is shared):
+
+```
+prepare(opts, io)                 -> { go: false, result } | { go: true, order }
+agent(order, io, { bundle })      -> result                 (review: agent(order, io))
+publish(order, result, io, { bundle }) -> what run() returns (review: publish(order, result, io))
+run(opts, io)                     = the three in one process, handing over JSON text and a bundle file
+```
+
+| job | holds | runs | may not |
+|---|---|---|---|
+| `prepare` | App key | engine, git (history only: fetch, rev-parse, merge-base, merge-tree) | start the agent, check out or run the repository |
+| `agent` | model key, `GITHUB_TOKEN` with `contents: read` | `stack.setup`, the agent, `stack.check` | be given `PIPELINE_APP_KEY` |
+| `publish` | App key | engine, git in a bare repository of its own | start the agent, check out or run anything it was handed |
+
+What crosses:
+
+- **engine_sha** (a job output of `prepare`): the commit of the engine it ran. The other two
+  jobs check that commit out, so a moving `engine_ref` cannot give one run two engines.
+- **order** (`order.json`, prepare -> agent and publish): the numbers, the commits to start
+  from, the claim, the prompt. An artifact, so replaceable by any job of the run:
+  `prepare` writes `order_sha256` to its job outputs and `publish` opens the file only
+  with that digest (`openOrder`). The agent's job reads it unchecked; what it does with a
+  wrong order is its own problem.
+- **result** (`result.json`, agent -> publish): `cleanResult` keeps `outcome`, `why`,
+  `reason`, `detail`, `error`, `rc`, `output`, `usage`, each of its type and cut to
+  length; `cleanUsage` keeps numbers, model names and a known outage reason. Whatever the
+  file says about pull requests, files, shas or levels is dropped: those come from the
+  order and from git.
+- **bundle** (`change.bundle`, executor only): one ref, `refs/pipeline/out`, whose commit
+  is a carrier. `publish` fetches it into a bare repository, takes `^{tree}` and nothing
+  else, takes that through `read-tree` and `write-tree` (it must come back as itself: no
+  `.git` entry, no malformed tree; git before 2.46 does not fsck a bundle on fetch, so
+  `transfer.fsckObjects` alone is not relied on), runs `treeProblem` on it (forbidden paths, an unresolved
+  conflict, a base change thrown away, no change at all), and makes the commits with
+  `commit-tree`:
+
+  | `order.shape` | commits made by publish |
+  |---|---|
+  | `new` | tree on `baseSha` |
+  | `plain` (rework, branch contains the base) | tree on the PR head |
+  | `merge` (rework, base merges cleanly) | `merge-tree` of head and base as a merge commit, then the tree on it |
+  | `conflict` (rework, the agent resolved it) | tree with two parents: the PR head and `baseSha` |
+
+  The push is never forced, so a branch that moved in the meantime refuses it.
+
+The executor outcomes the agent's job may report are `staged`, `skipped` (only
+`head_moved`, only in a rework), `unavailable` (only with a known reason in `usage`),
+`cannot_fix`, `forbidden`, `checks_failed`, `conflict`, `failed`. Anything else, or no
+result at all (the job was cancelled or timed out; `publish` runs with `always()`), is the
+outcome `failed`. `pr` and `rework` exist only as `publish`'s own conclusion.
+
+Not checkable from outside, and said so in docs/install.md, "Threat model and known gaps":
+that `stack.check` passed, and the usage figures.
 
 ## Roles and io (added after the core landed)
 
-Every role is `cli/roles/<name>.mjs` exporting `async function run(opts, io) -> {ok, ...}`.
+Every role is `cli/roles/<name>.mjs` exporting `async function run(opts, io) -> {ok, ...}`
+(`fix` and `review` also export the three parts `run` is made of, see "Three jobs").
 A role never imports `node:child_process`, never reads `process.env` and never calls
 `Date.now()`: everything outside comes through `io`, so tests pass a fake.
 

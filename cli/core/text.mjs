@@ -586,6 +586,7 @@ export const FIX_TEXT = {
   noReason: "no reason was given",
   noBundle: "the job that runs the agent reported a change but handed none over",
   badBundle: "the change handed over by the job that runs the agent could not be read",
+  badTree: "the change handed over by the job that runs the agent is not a tree git accepts (a path such as .git in it, or a malformed tree)",
   // comments
   opened: (pr, what, draft) => `The pipeline executor opened #${pr} for ${what}${draft ? " as a draft: it touches level 3 paths, a person has to look at it" : ""}.`,
   result: {

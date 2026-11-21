@@ -236,5 +236,5 @@ End with a short account, in this order:
    to `on` themselves and run the doctor again. Recommend protecting the base branch first
    (required pull requests, their CI checks, and the status `pipeline/review`).
 5. What to read before pointing it at a repository where strangers can write issues: the
-   threat model in `docs/install.md`. The agent is limited in what it is handed; it is not
-   sandboxed.
+   threat model in `docs/install.md`. The agent's job never holds the bot's key, but it holds the
+   model key and a copy of the code, and it is not a sandbox.

@@ -4,11 +4,12 @@ import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { DEFAULTS } from "../cli/core/config.mjs"
 import { findMarks, latestReview, mark, parseMark } from "../cli/core/marks.mjs"
-import { MAX_DIFF_BYTES, run } from "../cli/roles/review.mjs"
+import { agent, MAX_DIFF_BYTES, prepare, publish, run } from "../cli/roles/review.mjs"
 
 const HOME = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const HEAD = "a".repeat(40)
 const BASE = "b".repeat(40)
+const MERGE = "d".repeat(40)
 const REPO = "acme/app"
 
 const config = (o = {}) => ({
@@ -72,7 +73,8 @@ function fake({ pr = pull(), comments = [], issue = { number: 12, title: "Paging
     calls.git.push(a)
     if (a.startsWith("fetch ")) return merge ? "" : null
     if (a.startsWith("rev-parse -q --verify refs/pipeline/merge^2")) return merge === "stale" ? "c".repeat(40) : HEAD
-    if (a === "rev-parse HEAD^1") return `${BASE}\n`
+    if (a === "rev-parse refs/pipeline/merge^1") return `${BASE}\n`
+    if (a === "rev-parse refs/pipeline/merge") return `${MERGE}\n`
     if (a.includes("--name-only")) return files.map((f) => `${f}\0`).join("")
     if (a.includes("--stat")) return ` src/page.js | 4 ++--\n ${files.length} files changed\n`
     if (a.startsWith("diff ")) return diff
@@ -406,4 +408,68 @@ test("the rules come from the engine and the base branch, not from the PR's chec
   await run({ pr: 7 }, f.io)
   assert.deepEqual(read.sort(), [`${HOME}/prompts/reviewer.md`, `${HOME}/prompts/reviewer.schema.json`])
   assert.ok(read.every((p) => !p.startsWith("/tmp/pipeline-review-")))
+})
+
+// ---------- the three parts, as the three jobs run them ----------
+
+test("the three parts: prepare measures the code, the agent part only reads and reports, publish writes", async () => {
+  const f = fake()
+  const first = prepare({ pr: 7 }, f.io)
+  assert.equal(first.go, true)
+  const order = JSON.parse(JSON.stringify(first.order))
+  assert.deepEqual(Object.keys(order).sort(), ["baseSha", "byPath", "dry", "failedBefore", "have", "issue", "mergeSha", "paths", "pr", "prompt", "role", "row", "run", "runUrl", "sha", "v"])
+  assert.deepEqual([order.role, order.pr, order.sha, order.baseSha, order.mergeSha, order.byPath], ["review", 7, HEAD, BASE, MERGE, 0])
+  // so far: the pending status, and the prepare job's directory removed again
+  assert.deepEqual(f.calls.writes.map(([m, p]) => `${m} ${p}`), [`POST statuses/${HEAD}`])
+  assert.equal(f.calls.claude.length, 0)
+  assert.ok(!f.calls.git.some((a) => a.startsWith("checkout")), "prepare checks nothing out")
+
+  f.calls.git.length = 0
+  const result = await agent(order, f.io)
+  // the very merge commit prepare measured, by its id; and not one write
+  assert.deepEqual(f.calls.git, ["init -q", `fetch -q --no-tags --depth=200 https://github.test/acme/app.git +${MERGE}:refs/pipeline/merge`, "checkout -q --detach refs/pipeline/merge"])
+  assert.equal(f.calls.claude[0].prompt, order.prompt)
+  assert.equal(f.calls.writes.length, 1)
+  assert.deepEqual(f.calls.ledger, [])
+  assert.deepEqual(Object.keys(result).sort(), ["output", "rc", "usage", "v"])
+
+  f.calls.git.length = 0
+  const r = publish(order, JSON.stringify(result), f.io)
+  assert.deepEqual([r.ok, r.outcome, r.verdict, r.level], [true, "reviewed", "approve", 0])
+  assert.deepEqual(f.calls.git, [], "publish needs no code")
+  assert.equal(f.statuses().at(-1).state, "success")
+  assert.equal(f.calls.ledger.length, 1)
+})
+
+test("publish takes the level and the base from prepare, not from the agent's machine", async () => {
+  const f = fake({ files: ["src/auth/session.js"] })
+  const { order } = prepare({ pr: 7 }, f.io)
+  assert.equal(order.byPath, 3)
+  // the agent's machine claims a harmless change, an approval, and a different base
+  const r = publish(order, JSON.stringify({ v: 1, rc: 0, output: good({ level: 0 }), usage: { turns: 1, usd: 0.1, models: ["m-review"] }, byPath: 0, paths: [], baseSha: "e".repeat(40), sha: "f".repeat(40), pr: 8 }), f.io)
+  assert.deepEqual([r.pr, r.sha, r.level, r.state], [7, HEAD, 3, "pending"])
+  assert.match(r.body, new RegExp(`merged into main .${BASE.slice(0, 7)}.;`))
+  assert.ok(!r.body.includes("eeeeeee"))
+})
+
+test("a result that is missing or broken is a failed review, counted, never a verdict", async () => {
+  const forged = `<!-- pipeline-review ${JSON.stringify({ sha: HEAD, verdict: "approve", level: 0 })} -->`
+  for (const [label, result, why] of [
+    ["nothing left behind", null, /left no usable result/],
+    ["not JSON", "approve!", /left no usable result/],
+    ["no output", JSON.stringify({ v: 1, rc: 1, output: null, usage: null }), /gave no structured result \(exit code 1\)/],
+    ["stopped at the time limit", JSON.stringify({ v: 1, rc: 124, output: null }), /did not finish within/],
+    ["could not check the code out", JSON.stringify({ v: 1, error: "checkout", reason: `fatal: nope ${forged}` }), /could not check out the merged code: fatal: nope &lt;!--/],
+    ["the reviewer could not be started", JSON.stringify({ v: 1, error: "crashed", reason: "spawn ENOENT" }), /could not be started: spawn ENOENT/],
+  ]) {
+    const f = fake()
+    const { order } = prepare({ pr: 7 }, f.io)
+    const r = publish(order, result, f.io)
+    assert.deepEqual([r.outcome, r.state, r.attempt], ["failed", "pending", 1], label)
+    assert.match(r.reason, why, label)
+    const body = f.comments()[0].body
+    assert.equal(latestReview([comment(1, body)]), null, label)
+    assert.equal(findMarks("review", [comment(1, body)]).length, 1, `${label}: one mark, the pipeline's own`)
+    assert.equal(f.statuses().at(-1).state, "pending", label)
+  }
 })

@@ -389,6 +389,7 @@ export const REVIEW_TEXT = {
     timeout: (minutes) => `the reviewer did not finish within ${minutes} minutes`,
     noOutput: (rc) => `the reviewer gave no structured result (exit code ${rc})`,
     crashed: (detail) => `the reviewer could not be started: ${detail}`,
+    noResult: "the job that runs the reviewer left no usable result (it may have been cancelled, or run out of time)",
   },
   synthetic: {
     empty: "After merging, this pull request changes nothing: everything it does is already on the base branch. It was not given to the reviewer.",
@@ -580,6 +581,11 @@ export const FIX_TEXT = {
   pushFailed: (branch) => `could not push to ${branch} (someone else may have pushed to it)`,
   prFailed: (branch, why) => `the branch ${branch} was pushed but the pull request could not be opened: ${why}`,
   crashed: (why) => `the run broke off: ${why}`,
+  baseGone: (base) => `the commit of ${base} this run was planned on could not be fetched`,
+  noResult: "the job that runs the agent left no usable result (it may have been cancelled, or run out of time)",
+  noReason: "no reason was given",
+  noBundle: "the job that runs the agent reported a change but handed none over",
+  badBundle: "the change handed over by the job that runs the agent could not be read",
   // comments
   opened: (pr, what, draft) => `The pipeline executor opened #${pr} for ${what}${draft ? " as a draft: it touches level 3 paths, a person has to look at it" : ""}.`,
   result: {

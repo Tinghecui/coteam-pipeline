@@ -22,6 +22,15 @@ const code = (text) =>
     .filter((l) => !/^\s*#/.test(l))
     .join("\n")
 
+// The jobs of a workflow, in order: [{ id, text }], comments removed.
+function jobsOf(text) {
+  const t = code(text)
+  const body = t.slice(t.indexOf("\njobs:\n") + 7)
+  return [...body.matchAll(/^  (\w+):\n((?:(?:    .*)?\n)+)/gm)].map((m) => ({ id: m[1], text: m[2] }))
+}
+const AGENT_ROLES = ["fix", "review"]
+const job = (f, id) => jobsOf(f.text).find((j) => j.id === id).text
+
 // The text of every `run:` script in a workflow (one-line and block forms).
 function runScripts(text) {
   const lines = text.split("\n")
@@ -81,7 +90,43 @@ test("the reusable workflows declare the secrets they use and nothing else", () 
     const used = [...new Set([...code(f.text).matchAll(/\$\{\{\s*secrets\.(\w+)\s*\}\}/g)].map((m) => m[1]))].sort()
     assert.deepEqual(used, f.name === "tick" ? ["PIPELINE_APP_KEY"] : ["ANTHROPIC_API_KEY", "PIPELINE_APP_KEY"], f.path)
     for (const s of used) assert.match(code(f.text), new RegExp(`^      ${s}:\\n(?:        description: .*\\n)?        required: true$`, "m"), `${f.path} ${s}`)
-    assert.ok(!/GITHUB_TOKEN|github\.token/.test(code(f.text)), `${f.path}: the default token is not handed to any step`)
+    // The workflow's own token goes to one step only: the agent's, which fetches the code with it.
+    assert.ok(!/GITHUB_TOKEN/.test(code(f.text)), f.path)
+    assert.deepEqual(code(f.text).match(/.*github\.token.*/g) || [], f.name === "tick" ? [] : ["          PIPELINE_TOKEN: ${{ github.token }}"], f.path)
+  }
+})
+
+test("three jobs: the bot's key and the agent never share a machine", () => {
+  assert.deepEqual(jobsOf(REUSABLE[0].text).map((j) => j.id), ["tick"])
+  for (const f of REUSABLE.filter((r) => AGENT_ROLES.includes(r.name))) {
+    assert.deepEqual(jobsOf(f.text).map((j) => j.id), ["prepare", "agent", "publish"], f.path)
+    const [prepare, agent, publish] = ["prepare", "agent", "publish"].map((id) => job(f, id))
+    // the agent's job: the model key, the read-only token, and no trace of the bot
+    assert.ok(!/PIPELINE_APP|PIPELINE_BOT/.test(agent), `${f.path}: the bot's key in the agent's job`)
+    assert.match(agent, /ANTHROPIC_API_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/, f.path)
+    assert.match(agent, /PIPELINE_TOKEN: \$\{\{ github\.token \}\}/, f.path)
+    assert.match(agent, /^    needs: prepare\n    if: needs\.prepare\.outputs\.go == 'true'$/m, f.path)
+    // the jobs with the bot's key: no model key, no agent CLI, no token of the workflow's, and
+    // nothing run but the engine
+    for (const [id, text] of [["prepare", prepare], ["publish", publish]]) {
+      assert.match(text, /PIPELINE_APP_KEY: \$\{\{ secrets\.PIPELINE_APP_KEY \}\}/, `${f.path} ${id}`)
+      assert.ok(!/ANTHROPIC|CLAUDE|claude|github\.token/.test(text), `${f.path} ${id}: the agent or its key next to the bot's key`)
+      const scripts = runScripts(text)
+      assert.equal(scripts.length, 1, `${f.path} ${id}: one script, the engine`)
+      assert.match(scripts[0], /^node "\$GITHUB_WORKSPACE\/engine\/cli\/main\.mjs" /, `${f.path} ${id}`)
+    }
+    // prepare vouches for the order through its outputs; publish checks it, and runs whatever became of the agent
+    assert.match(prepare, /^    outputs:\n      go: \$\{\{ steps\.prepare\.outputs\.go \}\}\n      order_sha256: \$\{\{ steps\.prepare\.outputs\.order_sha256 \}\}$/m, f.path)
+    assert.match(publish, /^    needs: \[prepare, agent\]$/m, f.path)
+    assert.match(publish, /^    if: \$\{\{ always\(\) && needs\.prepare\.outputs\.go == 'true' \}\}$/m, f.path)
+    assert.match(publish, /ORDER_SHA256: \$\{\{ needs\.prepare\.outputs\.order_sha256 \}\}/, f.path)
+    assert.match(publish, /--sha256="\$ORDER_SHA256"/, f.path)
+    // the order is uploaded once, by prepare; the result once, by the agent's job; publish uploads nothing
+    assert.deepEqual([prepare, agent, publish].map((t) => (t.match(/actions\/upload-artifact@/g) || []).length), [1, 1, 0], f.path)
+    assert.deepEqual([prepare, agent, publish].map((t) => (t.match(/actions\/download-artifact@/g) || []).length), [0, 1, 2], f.path)
+    assert.match(prepare, /name: pipeline-order\n\s+path: \$\{\{ runner\.temp \}\}\/pipeline-order\/order\.json\n/, f.path)
+    assert.match(agent, /if: always\(\)\n\s+uses: actions\/upload-artifact@v4\n\s+with:\n\s+name: pipeline-result\n/, f.path)
+    assert.match(f.text, /PIPELINE_APP_KEY may not appear in that job/, f.path)
   }
 })
 
@@ -121,24 +166,26 @@ test("no event text is interpolated anywhere but the allowed places", () => {
   }
 })
 
-test("only actions/checkout and actions/setup-node, by major version", () => {
+test("only GitHub's own checkout, setup-node and artifact actions, by major version", () => {
   for (const f of REUSABLE) {
     const used = [...code(f.text).matchAll(/^\s*(?:- )?uses:\s*(\S+)/gm)].map((m) => m[1])
     assert.ok(used.length >= 3, f.path)
-    for (const u of used) assert.match(u, /^actions\/(checkout|setup-node)@v\d+$/, `${f.path}: ${u}`)
+    for (const u of used) assert.match(u, f.name === "tick" ? /^actions\/(checkout|setup-node)@v\d+$/ : /^actions\/(checkout|setup-node|upload-artifact|download-artifact)@v\d+$/, `${f.path}: ${u}`)
     assert.match(f.text, /pinned by commit SHA/, `${f.path} says how to pin them`)
   }
 })
 
 test("both checkouts leave no credentials behind and the engine goes to its own directory", () => {
   for (const f of REUSABLE) {
-    const t = code(f.text)
-    assert.equal((t.match(/uses: actions\/checkout@/g) || []).length, 2, f.path)
-    assert.equal((t.match(/persist-credentials: false/g) || []).length, 2, f.path)
-    assert.match(t, /repository: \$\{\{ inputs\.engine_repository \}\}\n\s+ref: \$\{\{ inputs\.engine_ref \}\}\n\s+path: engine\n/, f.path)
-    assert.match(t, /path: repo\n/, f.path)
-    assert.match(t, /working-directory: repo\n/, f.path)
-    assert.match(t, /node-version: 22\n/, f.path)
+    for (const j of jobsOf(f.text)) {
+      const t = j.text
+      assert.equal((t.match(/uses: actions\/checkout@/g) || []).length, 2, `${f.path} ${j.id}`)
+      assert.equal((t.match(/persist-credentials: false/g) || []).length, 2, `${f.path} ${j.id}`)
+      assert.match(t, /repository: \$\{\{ inputs\.engine_repository \}\}\n\s+ref: \$\{\{ inputs\.engine_ref \}\}\n\s+path: engine\n/, `${f.path} ${j.id}`)
+      assert.match(t, /path: repo\n/, `${f.path} ${j.id}`)
+      assert.match(t, /working-directory: repo\n/, `${f.path} ${j.id}`)
+      assert.match(t, /node-version: 22\n/, `${f.path} ${j.id}`)
+    }
   }
 })
 
@@ -153,19 +200,23 @@ test("the engine repository appears only as the default of engine_repository", (
 })
 
 test("each reusable workflow runs exactly its command, with numbers passed through env", () => {
+  const engine = 'node "$GITHUB_WORKSPACE/engine/cli/main.mjs"'
+  const dirs = { order: '--order="$RUNNER_TEMP/pipeline-order"', result: '--result="$RUNNER_TEMP/pipeline-result"' }
+  // the first script is the one that takes the numbers; then the agent's and the publishing job's
   const want = {
-    tick: 'node "$GITHUB_WORKSPACE/engine/cli/main.mjs" tick --dry="$DRY"',
-    fix: 'node "$GITHUB_WORKSPACE/engine/cli/main.mjs" fix --issue="$ISSUE" --row="$ROW" --pr="$PR" --dry="$DRY"',
-    review: 'node "$GITHUB_WORKSPACE/engine/cli/main.mjs" review --pr="$PR" --dry="$DRY"',
+    tick: [`${engine} tick --dry="$DRY"`],
+    fix: [`${engine} fix prepare --issue="$ISSUE" --row="$ROW" --pr="$PR" --dry="$DRY" ${dirs.order}`, `${engine} fix agent ${dirs.order} ${dirs.result}`, `${engine} fix publish ${dirs.order} --sha256="$ORDER_SHA256" ${dirs.result}`],
+    review: [`${engine} review prepare --pr="$PR" --dry="$DRY" ${dirs.order}`, `${engine} review agent ${dirs.order} ${dirs.result}`, `${engine} review publish ${dirs.order} --sha256="$ORDER_SHA256" ${dirs.result}`],
   }
   for (const f of REUSABLE) {
     const scripts = runScripts(code(f.text))
-    assert.equal(scripts[scripts.length - 1], want[f.name], f.path)
-    for (const v of [...want[f.name].matchAll(/\$([A-Z]+)\b/g)].map((m) => m[1]).filter((v) => v !== "GITHUB_WORKSPACE")) assert.match(code(f.text), new RegExp(`^          ${v}: \\$\\{\\{ inputs\\.${v.toLowerCase()} \\}\\}$`, "m"), `${f.path} ${v}`)
+    assert.deepEqual(scripts.filter((s) => s.includes("cli/main.mjs")), want[f.name], f.path)
+    for (const v of [...want[f.name][0].matchAll(/\$([A-Z]+)\b/g)].map((m) => m[1]).filter((v) => !["GITHUB_WORKSPACE", "RUNNER_TEMP"].includes(v))) assert.match(code(f.text), new RegExp(`^          ${v}: \\$\\{\\{ inputs\\.${v.toLowerCase()} \\}\\}$`, "m"), `${f.path} ${v}`)
     assert.match(code(f.text), /PIPELINE_APP_ID: \$\{\{ inputs\.app_id \}\}/, f.path)
     assert.match(code(f.text), /PIPELINE_BOT: \$\{\{ inputs\.bot_login \}\}/, f.path)
     const installs = scripts.filter((s) => s.includes("@anthropic-ai/claude-code"))
     assert.equal(installs.length, f.name === "tick" ? 0 : 1, `${f.path}: the agent CLI is installed for the executor and the reviewer only`)
+    if (f.name !== "tick") assert.equal(runScripts(job(f, "agent")).filter((s) => s.includes("@anthropic-ai/claude-code")).length, 1, `${f.path}: and only in the agent's job`)
     for (const s of installs) assert.match(s, /"@anthropic-ai\/claude-code@\$CLAUDE_CODE_VERSION"/, f.path)
     if (f.name !== "tick") assert.match(code(f.text), /claude_code_version:\n(?: {8}.*\n)*? {8}default: "\d+\.\d+\.\d+"\n/, `${f.path}: an exact version is the default`)
   }
@@ -181,25 +232,29 @@ test("what the command line makes of the values a workflow passes", async () => 
 test("every job has a fixed timeout and a name the dispatcher can tell from the repository's CI", () => {
   const minutes = {}
   for (const f of REUSABLE) {
-    const t = code(f.text)
-    assert.equal((t.match(/^  \w+:\n    name: /gm) || []).length, 1, `${f.path}: one job`)
-    const name = /^    name: (.+)$/m.exec(t)[1]
-    assert.equal(name, `pipeline-${f.name}`, f.path)
-    assert.match(name, OWN_CHECK)
-    assert.match(`pipeline / ${name}`, OWN_CHECK, "as GitHub shows a called job")
+    const suffix = { prepare: "-prepare", agent: "", publish: "-publish", tick: "" }
+    for (const j of jobsOf(f.text)) {
+      const name = /^    name: (.+)$/m.exec(j.text)?.[1]
+      assert.equal(name, `pipeline-${f.name}${suffix[j.id]}`, `${f.path} ${j.id}`)
+      assert.match(name, OWN_CHECK)
+      assert.match(`pipeline / ${name}`, OWN_CHECK, "as GitHub shows a called job")
+      minutes[j.id === "agent" || j.id === "tick" ? f.name : `${f.name}-${j.id}`] = Number(/^    timeout-minutes: (\d+)$/m.exec(j.text)?.[1])
+      assert.match(j.text, /^    runs-on: ubuntu-latest$/m, `${f.path} ${j.id}`)
+    }
     assert.ok(!OWN_CHECK.test("build / test"))
-    minutes[f.name] = Number(/^    timeout-minutes: (\d+)$/m.exec(t)?.[1])
-    assert.match(t, /^    runs-on: ubuntu-latest$/m, f.path)
+    assert.ok(!OWN_CHECK.test("build / pipeline-fix-tests"))
   }
   assert.ok(minutes.tick > 0 && minutes.tick <= 30)
   assert.ok(minutes.review > 0 && minutes.review <= 120)
   // GitHub ends a hosted job after 360 minutes whatever the file says.
   assert.ok(minutes.fix >= 180 && minutes.fix <= 360)
+  // the jobs around the agent's only talk to GitHub
+  for (const k of ["fix-prepare", "fix-publish", "review-prepare", "review-publish"]) assert.ok(minutes[k] > 0 && minutes[k] <= 30, k)
 })
 
 test("the limits the doctor warns about fit under the job timeouts", async () => {
   const { MAX_EXECUTOR_MINUTES, MAX_REVIEWER_MINUTES } = await import("../cli/roles/doctor.mjs")
-  const of = (n) => Number(/^    timeout-minutes: (\d+)$/m.exec(REUSABLE.find((f) => f.name === n).text)[1])
+  const of = (n) => Number(/^    timeout-minutes: (\d+)$/m.exec(job(REUSABLE.find((f) => f.name === n), "agent"))[1])
   // executor: setup and checks need room after the agent
   assert.ok(MAX_EXECUTOR_MINUTES + 60 <= of("fix"))
   assert.ok(MAX_REVIEWER_MINUTES + 15 <= of("review"))

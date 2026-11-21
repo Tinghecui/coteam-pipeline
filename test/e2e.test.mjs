@@ -349,9 +349,20 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
     }
   }
 
-  // ---- git: one fake checkout per directory ----
+  // ---- git: one fake repository per directory ----
+  // Trees and commits the roles make are shared by all of them, as objects travel between
+  // the jobs in a bundle. A tree is known by the files it changes against the base it holds.
+  const trees = new Map()
+  const commits = new Map()
+  const bundles = new Map()
+  const branchAt = (head) => [...w.branches.values()].find((b) => b.sha === head)
+  const treeOf = (id) => {
+    if (commits.has(id)) return commits.get(id)
+    if (!trees.has(`tree-of-${id}`)) trees.set(`tree-of-${id}`, { files: [...(branchAt(id)?.files || [])], base: branchAt(id)?.base || id })
+    return `tree-of-${id}`
+  }
   const makeGit = ({ cwd }) => {
-    if (!w.dirs.has(cwd)) w.dirs.set(cwd, { head: "", branch: "", refs: {}, changes: [], branchFiles: [], branchBase: "", reviewPr: 0 })
+    if (!w.dirs.has(cwd)) w.dirs.set(cwd, { head: "", tree: "", branch: "", refs: {}, changes: [], branchFiles: [], branchBase: "", reviewPr: 0 })
     const d = w.dirs.get(cwd)
     const ok = (stdout = "") => ({ rc: 0, stdout, stderr: "" })
     const no = (stderr = "") => ({ rc: 1, stdout: "", stderr })
@@ -361,7 +372,7 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
       const a = args.join(" ")
       let m
       if (a.startsWith("config --local")) return no()
-      if (a === "init -q") return ok()
+      if (a === "init -q" || a === "init -q --bare") return ok()
       if (a === "rev-parse --is-shallow-repository") return ok("false\n")
       if (args[0] === "fetch") {
         const spec = args[args.length - 1]
@@ -370,6 +381,17 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
           if (!pr || pr.state !== "open" || pr.mergeable === false) return no("fatal: couldn't find remote ref")
           d.reviewPr = pr.number
           d.refs[m[2]] = pr.head.sha
+          return ok()
+        }
+        // the reviewer's own checkout: the merge commit, by its id
+        if ((m = /^\+([0-9a-f]{40}):(.+)$/.exec(spec))) {
+          d.refs[m[2]] = m[1]
+          return ok()
+        }
+        // the tree handed from the agent's job to the publishing job
+        if (spec === "+refs/pipeline/out:refs/pipeline/in") {
+          if (!bundles.has(args[args.length - 2])) return no("fatal: not a bundle")
+          d.refs["refs/pipeline/in"] = bundles.get(args[args.length - 2])
           return ok()
         }
         if ((m = /^\+refs\/heads\/(.+?):(.+)$/.exec(spec))) {
@@ -383,42 +405,65 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
         const b = w.branches.get(String(args[args.length - 1]).replace("refs/heads/", ""))
         return ok(b ? `${b.sha}\t${args[args.length - 1]}\n` : "")
       }
+      if (args[0] === "cat-file") return ok()
       if (a === "rev-parse -q --verify refs/pipeline/merge^2") return ok(`${d.refs["refs/pipeline/merge"] || ""}\n`)
-      if (a === "rev-parse HEAD^1") return ok(`${base().sha}\n`)
+      if (a === "rev-parse refs/pipeline/merge^1") return ok(`${base().sha}\n`)
       if (a === "rev-parse HEAD") return ok(`${d.head}\n`)
+      if (args[0] === "rev-parse" && (m = /^(.+)\^\{tree\}$/.exec(args[1]))) return ok(`${treeOf(d.refs[m[1]] || m[1])}\n`)
       if (args[0] === "rev-parse" && d.refs[args[1]]) return ok(`${d.refs[args[1]]}\n`)
       if (a.startsWith("checkout -q --detach")) return ok()
       if (a.startsWith("checkout -q -B ")) {
         const known = [...w.branches.entries()].find(([name, b]) => name === args[3] && b.sha === args[4])
-        Object.assign(d, { branch: args[3], head: args[4], changes: [], branchFiles: known ? [...known[1].files] : [], branchBase: known ? known[1].base : args[4] })
+        Object.assign(d, { branch: args[3], head: args[4], tree: treeOf(args[4]), changes: [], branchFiles: known ? [...known[1].files] : [], branchBase: known ? known[1].base : args[4] })
         return ok()
       }
-      if (a.startsWith("merge-base --is-ancestor")) return d.branchBase === args[2] ? ok() : no()
-      if (args[0] === "merge-base") return ok(`${d.branchBase}\n`)
-      if (args[0] === "merge" && args[1] === "--abort") return ok()
+      // does the branch (named by its head) contain the base?
+      if (a.startsWith("merge-base --is-ancestor")) return branchAt(args[3])?.base === args[2] ? ok() : no()
+      if (args[0] === "merge-base") return ok(`${branchAt(args[2])?.base || args[1]}\n`)
+      // how the base would merge into the branch: always cleanly here
+      if (args[0] === "merge-tree") {
+        const [head, onto] = args.slice(-2)
+        const id = `merge-of-${head}-${onto}`
+        trees.set(id, { files: [...(branchAt(head)?.files || [])], base: onto })
+        return ok(a.includes("-z") ? `${id}\0` : `${id}\n`)
+      }
+      if (args[0] === "merge" && (args[1] === "--abort" || args[1] === "--quit")) return ok()
       if (args[0] === "merge") {
-        Object.assign(d, { head: sha(), branchBase: args[args.length - 1] })
+        const onto = args[args.length - 1]
+        const id = `merge-of-${d.head}-${onto}`
+        trees.set(id, { files: [...d.branchFiles], base: onto })
+        Object.assign(d, { head: sha(), tree: id, branchBase: onto })
         return ok()
       }
-      if (a.startsWith("reset ") || a.startsWith("add -A") || a.startsWith("clean ")) return ok()
-      // the reviewer's checkout: base with the pull request merged in
+      if (a.startsWith("reset ") || a.startsWith("add -A") || a.startsWith("clean ") || args[0] === "update-ref") return ok()
+      // the reviewer's code: base with the pull request merged in
       if (a.startsWith("diff --no-color")) {
         const files = w.branches.get(w.prs.get(d.reviewPr).head.ref).files
         if (a.includes("--name-only")) return ok(z(files))
         return ok(a.includes("--stat") ? `${files.map((f) => ` ${f} | 2 +-`).join("\n")}\n ${files.length} files changed\n` : `diff --git ${files.join(" ")}\n`)
       }
-      // the executor's checkout
-      if (a.startsWith("diff --cached --quiet")) return d.changes.length ? no() : ok()
-      if (a.startsWith("diff --cached --name-only")) return ok(z(args[args.length - 1] === base().sha ? union(d.branchFiles, d.changes) : d.changes))
-      if (a.startsWith("diff --name-only --diff-filter=U")) return ok("")
-      if (a.startsWith("diff --name-only")) return ok(z(d.branchFiles))
-      if (args[0] === "commit") {
-        Object.assign(d, { head: sha(), branchFiles: union(d.branchFiles, d.changes), changes: [] })
+      // the executor's tree: the working tree as the agent left it
+      if (a === "write-tree") {
+        if (!d.changes.length) return ok(`${d.tree}\n`)
+        const id = `tree-${sha()}`
+        trees.set(id, { files: union(d.branchFiles, d.changes), base: d.branchBase })
+        return ok(`${id}\n`)
+      }
+      if (args[0] === "commit-tree") {
+        const id = sha()
+        commits.set(id, args[1])
+        return ok(`${id}\n`)
+      }
+      if (args[0] === "bundle") {
+        bundles.set(args[3], d.refs["refs/pipeline/out"] ?? [...commits.keys()].pop())
         return ok()
       }
+      // what a tree or a commit changes against the base
+      if (a.startsWith("diff --name-only --no-renames -z")) return ok(z(trees.get(commits.get(args[5]) || args[5])?.files || []))
       if (args[0] === "push") {
-        const ref = String(args[args.length - 1]).replace("HEAD:refs/heads/", "")
-        pushed(ref, d.head, [...d.branchFiles], d.branchBase)
+        const [head, ref] = String(args[args.length - 1]).split(":refs/heads/")
+        const t = trees.get(commits.get(head))
+        pushed(ref, head, [...t.files], t.base)
         return ok()
       }
       throw new Error(`fake git: unexpected command: git ${a}`)
@@ -453,7 +498,7 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
     gh: w.gh,
     makeGit,
     proc: { run: () => ({ rc: 0, stdout: "", stderr: "" }), must: () => "", shell: () => ({ rc: 0, stdout: "", stderr: "" }) },
-    fs: { read: (p) => readFileSync(p, "utf8"), write: () => {}, exists: () => false, mkdtemp: (prefix) => `/tmp/${prefix}${++tmp}` },
+    fs: { read: (p) => readFileSync(p, "utf8"), write: () => {}, exists: (p) => bundles.has(p), mkdtemp: (prefix) => `/tmp/${prefix}${++tmp}` },
     claude,
     ledger: {
       read: () => clone(w.ledger),

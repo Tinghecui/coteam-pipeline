@@ -107,7 +107,7 @@ const GREEN = ["success", "neutral", "skipped"]
 // the change. This is the one place that knows the names; everything that reads check runs
 // (the tick's gather, mergeable, the plan's failed check, the executor's rework feedback, the
 // doctor) goes through it. .github/workflows/*.yml must keep the job names (test/workflows.test.mjs).
-export const OWN_CHECK = /(^|\/ )pipeline-(tick|fix|review)$/
+export const OWN_CHECK = /(^|\/ )pipeline-(tick|fix|review)(-(prepare|publish))?$/
 export const isOwnCheck = (name) => OWN_CHECK.test(String(name || ""))
 // The check runs that are the repository's CI: not the pipeline's own jobs, and not a check
 // that carries the name of the pipeline's own status (`context`).

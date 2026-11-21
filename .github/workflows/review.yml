@@ -5,15 +5,32 @@
 # the user's repository by templates/workflows/pipeline-review.yml, which only the dispatcher
 # (or a person with write access) starts through workflow_dispatch.
 #
-# Security notes for whoever edits this file:
-#   - Nothing from the event payload may appear in a `run:` script. The pull request number
-#     reaches the engine through `env:` and the engine refuses anything that is not a whole number.
-#   - This job never checks out the pull request's code with actions/checkout. The engine
-#     fetches the merge ref into a separate temporary directory and the reviewer only reads it;
+# Three jobs, three machines. Security notes for whoever edits this file:
+#   - `prepare` and `publish` hold the bot's key. Neither may ever run the agent, install the
+#     agent's CLI, or run anything from the repository's checkout (no setup command, no
+#     test, no script, no action from the repository). They run the engine and git, nothing else.
+#   - `agent` runs the agent and the repository's own code. It must never be given the bot's
+#     key: PIPELINE_APP_KEY may not appear in that job. It gets the model key, and the
+#     workflow's own token, which this file limits to reading the repository's contents
+#     (that is how it fetches the code; it can write nowhere).
+#   - What `agent` hands to `publish` is an artifact written on a machine the agent
+#     controlled. `publish` treats it as a stranger's: the engine reads it as data, checks
+#     it, and makes the commit itself. Do not add a step to `publish` that executes,
+#     sources, unpacks into the checkout or otherwise trusts anything from that artifact.
+#   - The work order goes from `prepare` to `publish` as an artifact too, and an artifact
+#     can be replaced by any job of the run. So `prepare` reports the order's SHA-256 as a
+#     job output (which other jobs cannot change) and `publish` refuses an order that does
+#     not match it. Keep `--sha256` wired to that output.
+#   - Nothing from the event payload may appear in a `run:` script. The numbers below reach
+#     the engine through `env:` and the engine refuses anything that is not a whole number.
+#   - Do not add steps that put a token on disk or in git's config (`persist-credentials:
+#     false` is part of that), and do not add deploy or cloud credentials to any job.
+#   - Third-party actions: only actions/checkout, actions/setup-node, actions/upload-artifact
+#     and actions/download-artifact, by major version tag. A user who wants them
+#     pinned by commit SHA can fork this repository and pin them there.
+#   - No job checks out the pull request's code with actions/checkout. The engine fetches
+#     the merge commit into a separate temporary directory and the reviewer only reads it;
 #     nothing from the pull request is executed.
-#   - The default GITHUB_TOKEN is used for one thing: the two checkouts.
-#   - Third-party actions: only actions/checkout and actions/setup-node, by major version tag.
-#     A user who wants them pinned by commit SHA can fork this repository and pin them there.
 name: review
 
 on:
@@ -49,40 +66,88 @@ on:
         default: false
     secrets:
       PIPELINE_APP_KEY:
-        description: "The private key (PEM) of the GitHub App."
+        description: "The private key (PEM) of the GitHub App. Given to the prepare and publish jobs, never to the agent's."
         required: true
       ANTHROPIC_API_KEY:
-        description: "The team's own Anthropic API key. The only credential the agent is given."
+        description: "The team's own Anthropic API key. Given to the agent's job only."
         required: true
 
-# Read the two checkouts, nothing else. The verdict is written by the engine with the bot token.
+# The workflow's own token may read the repository's contents, nothing else. The verdict is
+# written by the engine with the bot token.
 permissions:
   contents: read
 
 jobs:
-  review:
-    # Why this name, and why this job is dispatch-only:
+  prepare:
+    name: pipeline-review-prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      go: ${{ steps.prepare.outputs.go }}
+      order_sha256: ${{ steps.prepare.outputs.order_sha256 }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # The base branch as dispatched, one commit. The engine fetches the pull request's merge ref itself (200 commits deep, into a temporary directory) with the bot token.
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.engine_repository }}
+          ref: ${{ inputs.engine_ref }}
+          path: engine
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prepare the work order
+        id: prepare
+        working-directory: repo
+        env:
+          PIPELINE_APP_ID: ${{ inputs.app_id }}
+          PIPELINE_APP_KEY: ${{ secrets.PIPELINE_APP_KEY }}
+          PIPELINE_BOT: ${{ inputs.bot_login }}
+          PR: ${{ inputs.pr }}
+          DRY: ${{ inputs.dry }}
+        run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" review prepare --pr="$PR" --dry="$DRY" --order="$RUNNER_TEMP/pipeline-order"
+      - name: Hand the work order on
+        if: steps.prepare.outputs.go == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-order
+          path: ${{ runner.temp }}/pipeline-order/order.json
+          if-no-files-found: error
+          retention-days: 1
+
+  agent:
+    # Why these names, and why the jobs are dispatch-only:
     # the dispatcher counts every check run on a pull request's head as the repository's CI,
     # except the one named like the pipeline's own commit status (status_context, default
     # "pipeline/review"). The verdict of a review is that commit status and nothing else. If
-    # this job ran on a pull request event, its check run "<caller job> / pipeline-review"
+    # these jobs ran on a pull request event, a check run "<caller job> / pipeline-review"
     # would sit on the pull request's head, and a reviewer that crashed (or was still running)
     # would be read as "CI failed" (or "CI pending") and send the pull request back for a
-    # rework it does not need. Started by workflow_dispatch on the base branch, the check run
-    # sits on a commit of the base branch instead, where no pull request's checks are read.
-    # The name can never equal a status context either: GitHub always shows a called job as
-    # "<caller job> / <this name>". Keep the trigger and the name as they are.
+    # rework it does not need. Started by workflow_dispatch on the base branch, the check runs
+    # sit on a commit of the base branch instead, where no pull request's checks are read.
+    # A name can never equal a status context either: GitHub always shows a called job as
+    # "<caller job> / <this name>". Keep the trigger and the names as they are.
     name: pipeline-review
+    needs: prepare
+    if: needs.prepare.outputs.go == 'true'
     runs-on: ubuntu-latest
-    # A fixed ceiling, not the working limit: the engine stops the reviewer after
+    # A fixed ceiling, not the working limit: the engine stops the agent after
     # limits.reviewer_minutes (default 20).
     timeout-minutes: 60
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
         with:
-          # The base branch as dispatched, one commit. The engine fetches the pull request's
-          # merge ref itself (200 commits deep, into a temporary directory) with the bot token.
+          # One commit of the base branch. The engine fetches what it works on itself, with the read-only token below.
           path: repo
           fetch-depth: 1
           persist-credentials: false
@@ -102,13 +167,73 @@ jobs:
         env:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
         run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-      - name: Run the reviewer
+      - name: Take the work order
+        uses: actions/download-artifact@v4
+        with:
+          name: pipeline-order
+          path: ${{ runner.temp }}/pipeline-order
+      - name: Run the agent
+        working-directory: repo
+        env:
+          # The workflow's own token: it can read this repository's contents and nothing else
+          # (see `permissions` above). The bot's key is not in this job.
+          PIPELINE_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" review agent --order="$RUNNER_TEMP/pipeline-order" --result="$RUNNER_TEMP/pipeline-result"
+      - name: Hand the result on
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-result
+          path: ${{ runner.temp }}/pipeline-result
+          if-no-files-found: ignore
+          retention-days: 1
+
+  publish:
+    name: pipeline-review-publish
+    needs: [prepare, agent]
+    # Also when the agent's job failed, timed out or was cancelled: the claim has to be
+    # released and the failure said where people and the dispatcher will see it.
+    if: ${{ always() && needs.prepare.outputs.go == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # One commit of the base branch, for the engine to stand in. Nothing in it is run.
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.engine_repository }}
+          ref: ${{ inputs.engine_ref }}
+          path: engine
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Take the work order
+        uses: actions/download-artifact@v4
+        with:
+          name: pipeline-order
+          path: ${{ runner.temp }}/pipeline-order
+      - name: Take the result
+        # There is none when the agent's job died before it could leave one. The engine says so.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: pipeline-result
+          path: ${{ runner.temp }}/pipeline-result
+      - name: Check the result and publish it
         working-directory: repo
         env:
           PIPELINE_APP_ID: ${{ inputs.app_id }}
           PIPELINE_APP_KEY: ${{ secrets.PIPELINE_APP_KEY }}
           PIPELINE_BOT: ${{ inputs.bot_login }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PR: ${{ inputs.pr }}
-          DRY: ${{ inputs.dry }}
-        run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" review --pr="$PR" --dry="$DRY"
+          ORDER_SHA256: ${{ needs.prepare.outputs.order_sha256 }}
+        run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" review publish --order="$RUNNER_TEMP/pipeline-order" --sha256="$ORDER_SHA256" --result="$RUNNER_TEMP/pipeline-result"

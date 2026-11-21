@@ -2,6 +2,9 @@
 // Entry point. Workflows call `node cli/main.mjs <command>`:
 //   fix --issue N [--row R] [--pr P] [--dry]    executor: one issue (or one row of a spec issue); --pr = rework that PR
 //   review --pr N [--dry]                       reviewer
+//   fix|review prepare ... --order DIR          the same in three parts, one per job of the workflow (cli/core/handoff.mjs):
+//   fix|review agent --order DIR --result DIR     prepare writes the work order, agent runs the agent and leaves a result,
+//   fix|review publish --order DIR --sha256 H --result DIR   publish checks both and writes to GitHub
 //   tick [--dry]                                dispatcher
 //   spec check <file | - | issue number>        check a spec issue's format (a file or stdin needs no token)
 //   doctor [--fix]                              check the installation of this repository on GitHub (it only reads;
@@ -17,11 +20,12 @@
 // whatever the engine does after the agent (pushing, commenting, renewing the bot token) must
 // run code that was loaded before it. So: no dynamic import() anywhere under cli/, and no
 // child process that is started from a file of the engine (test/main.test.mjs checks both).
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadConfig, presetOf } from "./core/config.mjs"
+import { BUNDLE_FILE, MAX_RESULT_BYTES, openOrder, ORDER_FILE, RESULT_FILE, sealOrder } from "./core/handoff.mjs"
 import { ALWAYS_FORBIDDEN, forbiddenHits } from "./core/policy.mjs"
 import { checkSpec } from "./core/spec.mjs"
 import { appLogin, mintAppToken } from "./io/app-token.mjs"
@@ -33,12 +37,14 @@ import * as reviewRole from "./roles/review.mjs"
 import * as tickRole from "./roles/tick.mjs"
 
 const ROLES = { fix: fixRole, review: reviewRole, tick: tickRole }
+const PARTS = ["prepare", "agent", "publish"]
 
 export const TEXT = {
   usage: [
     "usage: main.mjs <command>",
     "  fix --issue N [--row R] [--pr P] [--dry]",
     "  review --pr N [--dry]",
+    "  fix|review prepare ... --order DIR | agent --order DIR --result DIR | publish --order DIR --sha256 H --result DIR",
     "  tick [--dry]",
     "  spec check <file | - | issue number>",
     "  doctor [--fix]",
@@ -49,6 +55,8 @@ export const TEXT = {
   notNumber: (flag, v) => `--${flag} must be a number, got "${v}"`,
   fixNeeds: "fix needs --issue N (or --pr P to rework a pull request)",
   reviewNeeds: "review needs --pr N",
+  partNeeds: (flag) => `this part needs --${flag} DIR`,
+  notOrder: (name) => `the work order is not one for "${name}"`,
   specOk: "The spec has no problems.",
   specProblems: (n) => `The spec has ${n} problem${n === 1 ? "" : "s"}:`,
   specUsage: "usage: main.mjs spec check <file | - | issue number>",
@@ -128,6 +136,60 @@ async function role(name, opts, { env, cwd, out }) {
   const res = await ROLES[name].run(opts, io)
   out(JSON.stringify(res ?? { ok: false }))
   return res?.ok ? 0 : 1
+}
+
+// One of the three parts of an agent role, as one job of the workflow runs it. What passes
+// between the jobs is files in two directories: the order (prepare -> agent, publish) and
+// the result (agent -> publish).
+//   prepare  writes the order and reports `go` and the order's digest through GITHUB_OUTPUT.
+//            go=false: the run ended here and the other two jobs are skipped.
+//   agent    reads the order, leaves the result (and, for the executor, the bundle). It
+//            always exits 0 when it got that far: what happened is for publish to say.
+//   publish  reads the order only if its digest is the one prepare reported, and the result
+//            as untrusted text, a plain file of a sane size or nothing at all.
+async function rolePart(name, part, opts, flags, { env, cwd, out }) {
+  const dir = (flag) => {
+    if (typeof flags[flag] !== "string" || !flags[flag].trim()) throw new Error(TEXT.partNeeds(flag))
+    return resolve(cwd, flags[flag].trim())
+  }
+  const plainFile = (path) => {
+    try {
+      return lstatSync(path).isFile()
+    } catch {
+      return false
+    }
+  }
+  const role = ROLES[name]
+  const done = (res) => {
+    out(JSON.stringify(res ?? { ok: false }))
+    return res?.ok ? 0 : 1
+  }
+  if (part === "prepare") {
+    const orderDir = dir("order")
+    const first = role.prepare(opts, makeIo({ env, cwd }))
+    const sealed = first.go ? sealOrder(first.order) : null
+    if (sealed) {
+      mkdirSync(orderDir, { recursive: true })
+      writeFileSync(join(orderDir, ORDER_FILE), sealed.text)
+    }
+    if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `go=${first.go ? "true" : "false"}\norder_sha256=${sealed?.sha256 || ""}\n`)
+    return first.go ? done({ ok: true, go: true, order_sha256: sealed.sha256 }) : done(first.result)
+  }
+  if (part === "agent") {
+    const order = JSON.parse(readFileSync(join(dir("order"), ORDER_FILE), "utf8"))
+    if (order?.role !== name) throw new Error(TEXT.notOrder(name))
+    const resultDir = dir("result")
+    mkdirSync(resultDir, { recursive: true })
+    const result = await role.agent(order, makeIo({ env, cwd }), { bundle: join(resultDir, BUNDLE_FILE) })
+    writeFileSync(join(resultDir, RESULT_FILE), JSON.stringify(result))
+    return done({ ok: true, outcome: result.outcome || result.error || "ran" })
+  }
+  const order = openOrder(readFileSync(join(dir("order"), ORDER_FILE), "utf8"), String(flags.sha256 || "").trim(), name)
+  const resultDir = dir("result")
+  const file = join(resultDir, RESULT_FILE)
+  const result = plainFile(file) && lstatSync(file).size <= MAX_RESULT_BYTES ? readFileSync(file, "utf8") : null
+  const bundle = join(resultDir, BUNDLE_FILE)
+  return done(role.publish(order, result, makeIo({ env, cwd }), { bundle: plainFile(bundle) ? bundle : "" }))
 }
 
 // The installation check (cli/roles/doctor.mjs). It needs the repository's name and a token
@@ -241,14 +303,16 @@ export async function main(argv, ctx = {}) {
     const dry = bool(flags, "dry")
     switch (cmd) {
       case "fix": {
+        const part = PARTS.includes(rest[0]) ? rest[0] : ""
         const opts = { issue: num(flags, "issue"), row: num(flags, "row"), pr: num(flags, "pr"), dry }
-        if (!opts.issue && !opts.pr) throw new Error(TEXT.fixNeeds)
-        return await role("fix", opts, io)
+        if (part !== "agent" && part !== "publish" && !opts.issue && !opts.pr) throw new Error(TEXT.fixNeeds)
+        return part ? await rolePart("fix", part, opts, flags, io) : await role("fix", opts, io)
       }
       case "review": {
+        const part = PARTS.includes(rest[0]) ? rest[0] : ""
         const pr = num(flags, "pr")
-        if (!pr) throw new Error(TEXT.reviewNeeds)
-        return await role("review", { pr, dry }, io)
+        if (part !== "agent" && part !== "publish" && !pr) throw new Error(TEXT.reviewNeeds)
+        return part ? await rolePart("review", part, { pr, dry }, flags, io) : await role("review", { pr, dry }, io)
       }
       case "tick":
         return await role("tick", { dry }, io)

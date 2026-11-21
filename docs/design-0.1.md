@@ -218,7 +218,7 @@ An answer is a comment on the decision item starting with an option letter (`A`,
 Red-check, responder and rule learning, follow-up digest, acceptance on preview URLs,
 project boards, a second reviewer model, conflict auto-merge without the agent (a rework with a conflict leaves it to the agent and records a real merge commit), other languages.
 
-## Three jobs (added after `v0.1.0`)
+## Three jobs (added in `v0.2.0`)
 
 Isolation of the agent from the bot's credentials. In `v0.1.0` the agent ran in the same
 job and as the same OS user as the engine, which holds the App's private key; on

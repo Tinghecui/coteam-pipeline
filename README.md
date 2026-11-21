@@ -13,7 +13,7 @@ project see nothing of your code or credentials.
 
 ## Status
 
-**The first release is `v0.1.0`. It is young.**
+**The current release is `v0.2.0`. It is young.**
 
 The engine (`cli/`), the reusable workflows and the templates have run end to end on a
 small public demonstration repository, with the real Claude Code CLI and the real GitHub
@@ -25,10 +25,12 @@ GitHub App, the installation pull request, the doctor, and a first issue through
 approved pull request. The test suite drives the same roles against an in-memory GitHub, a
 scripted agent and local git repositories.
 
-After `v0.1.0`, the executor and the reviewer were each split into three jobs, so that
-the bot's key is never on the runner the agent ran on (see
-[Threat model and known gaps](docs/install.md#threat-model-and-known-gaps)). That is on
-`main` and has run on the demonstration repository; the `v0.1.0` tag does not have it.
+Since `v0.2.0` the executor and the reviewer each run as three jobs, so that the bot's key
+is never on the runner the agent ran on (see
+[Threat model and known gaps](docs/install.md#threat-model-and-known-gaps)). That has run
+on the demonstration repository too: new work, a rework with a merge conflict, reviews
+and merges. `v0.1.0` does not have it; if you installed that, change `v0.1.0` to `v0.2.0`
+in your three workflow files (twice in each). Nothing else has to change.
 
 What has not been verified: a codebase of real size, or any stack but a small Node
 project; a repository owned by an organisation; answers by people who are not owners and

@@ -1,6 +1,6 @@
 {
   "name": "coteam-pipeline",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Issue → PR → review → merge pipeline for small product teams, running in the team's own CI",
   "license": "MIT",
   "type": "module",

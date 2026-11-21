@@ -91,7 +91,7 @@ export const TEXT = {
     extraTrigger: (file, trigger) => `${file} is also started by "${trigger}": it must be started by workflow_dispatch only`,
     extraTriggerHint: "Remove the other triggers. Only the dispatcher (or a person, from the Actions tab) starts it, with the number of the issue or pull request as input; an event cannot supply that, and a pull request event from a fork would run it on a stranger's say-so.",
     floating: (ref) => `the engine ref "${ref}" is a branch, not a release tag or a commit: the pipeline changes whenever that branch does`,
-    floatingHint: "Use a release tag (v0.1.0) or a full commit SHA.",
+    floatingHint: "Use a release tag (v0.2.0) or a full commit SHA.",
   },
   settings: {
     ok: (kind, names) => `${kind} present: ${names.join(", ")}`,

@@ -427,7 +427,7 @@ test("npm test runs every test file", () => {
 test("the README is in English, says what has not been verified and how to install, and its links exist", () => {
   const readme = readFileSync(join(ROOT, "README.md"), "utf8")
   assert.ok(!/[㐀-鿿]/.test(readme), "written for outside readers")
-  assert.match(readme, /The first release is `v0\.1\.0`/)
+  assert.match(readme, /The current release is `v0\.2\.0`/)
   assert.match(readme, /What has not been verified: a codebase of real size/)
   assert.match(readme, /\/plugin install coteam-pipeline@coteam-pipeline\n\/coteam-pipeline:init/)
   const links = [...readme.matchAll(/\]\(([^)#]+)(?:#[^)]*)?\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l))

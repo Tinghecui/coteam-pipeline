@@ -1,6 +1,6 @@
 # Installing the pipeline by hand
 
-> **Status: `v0.1.0` is the first release, and it is young.** The engine has run end to
+> **Status: `v0.2.0` is the current release, and it is young.** The engine has run end to
 > end on a small demonstration repository, and the installer once from an empty start.
 > Expect corrections.
 
@@ -34,7 +34,7 @@ You need:
 - an Anthropic API key;
 - the `gh` command line tool, logged in (`gh auth status`), for the commands below.
 
-In the commands, `ORG/REPO` is your repository, and `Tinghecui/coteam-pipeline@v0.1.0` stands
+In the commands, `ORG/REPO` is your repository, and `Tinghecui/coteam-pipeline@v0.2.0` stands
 for the engine repository and the release you install.
 
 ## 1. Create the GitHub App (the bot's identity)
@@ -120,8 +120,8 @@ From the engine repository, at the release you install:
 
 Keep the file names: the engine starts the workflows by these names.
 
-In each workflow, replace `Tinghecui/coteam-pipeline` with the engine repository and `v0.1.0`
-with the release, in **both** places (`uses: ...@v0.1.0` and `engine_ref: v0.1.0`). The two
+In each workflow, replace `Tinghecui/coteam-pipeline` with the engine repository and `v0.2.0`
+with the release, in **both** places (`uses: ...@v0.2.0` and `engine_ref: v0.2.0`). The two
 must be equal: the first picks the workflow, the second the code it runs. Use a release tag
 or a full commit SHA, not a branch, so that the pipeline changes only when you change it.
 
@@ -174,7 +174,7 @@ The doctor checks the installation and prints one line per check with what to do
 Run it on your machine, in a checkout of your repository, with a checkout of the engine next to it:
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/Tinghecui/coteam-pipeline ../coteam-pipeline
+git clone --depth 1 --branch v0.2.0 https://github.com/Tinghecui/coteam-pipeline ../coteam-pipeline
 GITHUB_REPOSITORY=ORG/REPO PIPELINE_TOKEN="$(gh auth token)" node ../coteam-pipeline/cli/main.mjs doctor
 ```
 
@@ -279,7 +279,7 @@ To stop everything at once, set `mode: off`, or disable the three workflows in t
 
 The executor and the reviewer each run as **three jobs on three separate runners**. The
 job that runs the agent never holds the bot's key, and the jobs that hold the bot's key
-never run the agent or any code from your repository. (This came after `v0.1.0`: that tag
+never run the agent or any code from your repository. (This came with `v0.2.0`: `v0.1.0`
 still runs each of them as one job. See "Known gaps" below for what that means.)
 
 | What | Where it runs | What it holds |
@@ -422,7 +422,8 @@ engine at the ref you pinned, GitHub and Anthropic are trusted.
 - **`v0.1.0` does not have the three jobs.** There the agent runs in the same job and as
   the same OS user as the engine, which holds the App key in memory, and that user has
   passwordless `sudo`: an agent that digs for the key can get it. If you installed
-  `v0.1.0`, move your three workflow files to a release that has the split.
+  `v0.1.0`, change `v0.1.0` to `v0.2.0` in your three workflow files (twice in each:
+  `uses: ...@` and `engine_ref`). Nothing else has to change.
 - **A self-hosted runner undoes the separation** if the three jobs land on the same
   machine and that machine is not wiped between jobs. Use GitHub-hosted runners, or
   ephemeral ones. (The lighter alternative to separate jobs, running the agent as a

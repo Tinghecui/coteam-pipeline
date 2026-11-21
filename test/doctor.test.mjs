@@ -81,7 +81,7 @@ test("a complete installation passes, with nothing written", async () => {
   assert.deepEqual(f.calls, [], "the doctor only reads")
   assert.equal(one(res, "config").state, "ok")
   assert.equal(one(res, "labels").state, "ok")
-  assert.equal(one(res, "workflow.engine").text, TEXT.callers.ok("main", "engine-org/coteam-pipeline", "v0.1.0"))
+  assert.equal(one(res, "workflow.engine").text, TEXT.callers.ok("main", "engine-org/coteam-pipeline", "v0.2.0"))
   assert.equal(one(res, "secrets").state, "ok")
   assert.equal(one(res, "variables").state, "ok")
   assert.equal(one(res, "write").state, "ok")
@@ -204,24 +204,24 @@ test("the workflows are read from the configured base branch", async () => {
 })
 
 test("engine_ref different from the ref in uses: fails", async () => {
-  const over = { [wf("pipeline-fix.yml")]: content(caller("pipeline-fix.yml", (t) => t.replace("engine_ref: v0.1.0", "engine_ref: v0.2.0"))) }
+  const over = { [wf("pipeline-fix.yml")]: content(caller("pipeline-fix.yml", (t) => t.replace("engine_ref: v0.2.0", "engine_ref: v0.3.0"))) }
   const res = await run({}, fake({ over }).io)
   const r = one(res, "workflow.fix")
   assert.equal(r.state, "FAIL")
-  assert.equal(r.text, TEXT.callers.refMismatch("pipeline-fix.yml", "v0.1.0", "v0.2.0"))
+  assert.equal(r.text, TEXT.callers.refMismatch("pipeline-fix.yml", "v0.2.0", "v0.3.0"))
   assert.equal(res.ok, false)
 })
 
 test("three callers on different engine refs fail, listing each", async () => {
-  const over = { [wf("pipeline-tick.yml")]: content(caller("pipeline-tick.yml", (t) => t.replaceAll("v0.1.0", "v0.1.1"))) }
+  const over = { [wf("pipeline-tick.yml")]: content(caller("pipeline-tick.yml", (t) => t.replaceAll("v0.2.0", "v0.2.1"))) }
   const res = await run({}, fake({ over }).io)
   const r = one(res, "workflow.engine")
   assert.equal(r.state, "FAIL")
-  assert.match(r.text, /pipeline-tick\.yml: engine-org\/coteam-pipeline@v0\.1\.1; pipeline-fix\.yml: engine-org\/coteam-pipeline@v0\.1\.0/)
+  assert.match(r.text, /pipeline-tick\.yml: engine-org\/coteam-pipeline@v0\.2\.1; pipeline-fix\.yml: engine-org\/coteam-pipeline@v0\.2\.0/)
 })
 
 test("a branch as the engine ref warns; a tag or a full sha does not", async () => {
-  const all = (ref) => Object.fromEntries(CALLERS.map((c) => [wf(c.file), content(caller(c.file, (t) => t.replaceAll("v0.1.0", ref)))]))
+  const all = (ref) => Object.fromEntries(CALLERS.map((c) => [wf(c.file), content(caller(c.file, (t) => t.replaceAll("v0.2.0", ref)))]))
   const onMain = await run({}, fake({ over: all("main") }).io)
   assert.equal(one(onMain, "workflow.ref").state, "warn")
   assert.equal(onMain.ok, true)
@@ -258,8 +258,8 @@ test("secrets: inherit warns; a lost run-name, a lost dispatch trigger and an ex
 test("parseCaller reads the templates and is not fooled by comments", () => {
   for (const c of CALLERS) {
     const p = parseCaller(file(`templates/workflows/${c.file}`))
-    assert.deepEqual(p.uses, { repo: "Tinghecui/coteam-pipeline", reusable: c.reusable, ref: "v0.1.0" })
-    assert.equal(p.engineRef, "v0.1.0")
+    assert.deepEqual(p.uses, { repo: "Tinghecui/coteam-pipeline", reusable: c.reusable, ref: "v0.2.0" })
+    assert.equal(p.engineRef, "v0.2.0")
     assert.equal(p.inherit, false)
   }
   const p = parseCaller('# uses: a/b/.github/workflows/tick.yml@old\non: [push, workflow_dispatch]\njobs:\n  j:\n    uses: "x/y/.github/workflows/tick.yml@abc" # note\n    with:\n      engine_ref: "abc"\n    # secrets: inherit\n')

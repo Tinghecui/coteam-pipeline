@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
-import { cleanResult, cleanUsage, digest, MAX_RESULT_BYTES, openOrder, ORDER_FILE, sealOrder } from "../cli/core/handoff.mjs"
+import { cleanResult, cleanUsage, digest, MAX_RESULT_BYTES, openOrder, orderId, ORDER_FILE, sealOrder } from "../cli/core/handoff.mjs"
 import { main } from "../cli/main.mjs"
 
 test("the order is believed only with the digest prepare reported, and only for its own role", () => {
@@ -13,6 +13,9 @@ test("the order is believed only with the digest prepare reported, and only for 
   const { text, sha256 } = sealOrder(order)
   assert.match(sha256, /^[0-9a-f]{64}$/)
   assert.equal(sha256, digest(text))
+  // the id the agent part writes into its result is the same digest, whichever side of a file the order is on
+  assert.equal(orderId(order), sha256)
+  assert.equal(orderId(JSON.parse(text)), sha256)
   assert.deepEqual(openOrder(text, sha256, "fix"), order)
   // replaced on the way: one byte is enough
   assert.throws(() => openOrder(text.replace('"issue":5', '"issue":6'), sha256, "fix"), /digest does not match/)
@@ -36,7 +39,7 @@ test("cleanUsage: numbers that are numbers, model names that look like names, an
 test("cleanResult: only the known fields, each of its type; anything else is no result", () => {
   for (const bad of [null, undefined, "", "not json", "[]", "7", [], 7, "x".repeat(MAX_RESULT_BYTES + 1)]) assert.equal(cleanResult(bad), null, String(bad).slice(0, 20))
   const r = cleanResult(JSON.stringify({ outcome: "staged", pr: 9, files: ["a"], reason: { toString: "x" }, detail: "d".repeat(9000), rc: "1", output: ["not", "an", "object"], usage: { turns: 3 } }))
-  assert.deepEqual(Object.keys(r).sort(), ["detail", "error", "outcome", "output", "rc", "reason", "usage", "why"])
+  assert.deepEqual(Object.keys(r).sort(), ["detail", "error", "order", "outcome", "output", "rc", "reason", "usage", "why"])
   assert.deepEqual([r.outcome, r.reason, r.detail.length, r.rc, r.output, r.usage], ["staged", "", 4000, null, null, { turns: 3, usd: 0, models: [] }])
   assert.deepEqual(cleanResult({ outcome: "x", output: { a: 1 }, rc: 124 }).output, { a: 1 })
 })

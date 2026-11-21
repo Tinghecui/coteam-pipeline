@@ -19,7 +19,7 @@
 // to change: the config is io.config (read from the base branch) and the prompt and schema
 // come from io.home (the engine's checkout), never from the PR's checkout.
 import { REVIEW_RETRIES, reviewDecision, validateReview } from "../core/decide.mjs"
-import { cleanResult } from "../core/handoff.mjs"
+import { cleanResult, orderId } from "../core/handoff.mjs"
 import { budget } from "../core/ledger.mjs"
 import { believedReviews, findMarks, issueOfBranch, latestReview, markAuthors, rowOfBranch, trustedComments } from "../core/marks.mjs"
 import { classifyPaths, pathLevel } from "../core/policy.mjs"
@@ -347,7 +347,7 @@ export async function agent(order, io) {
       git.remote(["fetch", "-q", "--no-tags", `--depth=${FETCH_DEPTH}`, git.url, `+${order.mergeSha}:${MERGE_REF}`])
       git.git(["checkout", "-q", "--detach", MERGE_REF])
     } catch (e) {
-      return { v: 1, error: "checkout", reason: firstLine(e) }
+      return { v: 1, order: orderId(order), error: "checkout", reason: firstLine(e) }
     }
     let res
     try {
@@ -362,9 +362,9 @@ export async function agent(order, io) {
         maxTurns: MAX_TURNS,
       })
     } catch (e) {
-      return { v: 1, error: "crashed", reason: firstLine(e) }
+      return { v: 1, order: orderId(order), error: "crashed", reason: firstLine(e) }
     }
-    return { v: 1, rc: Number.isInteger(res?.rc) ? res.rc : null, output: res?.output && typeof res.output === "object" && !Array.isArray(res.output) ? res.output : null, usage: res?.usage || null }
+    return { v: 1, order: orderId(order), rc: Number.isInteger(res?.rc) ? res.rc : null, output: res?.output && typeof res.output === "object" && !Array.isArray(res.output) ? res.output : null, usage: res?.usage || null }
   } finally {
     if (String(dir).includes("pipeline-review-")) io.proc.run("rm", ["-rf", dir])
   }
@@ -380,7 +380,7 @@ export function publish(order, result, io) {
   const x = writer(io, order)
   const level = order.byPath
   const r = cleanResult(result)
-  if (!r) return x.fail(TEXT.failure.noResult, { level })
+  if (!r || r.order !== orderId(order)) return x.fail(TEXT.failure.noResult, { level })
   if (r.error === "checkout") return x.fail(TEXT.failure.checkout(plain(r.reason)))
   if (r.error) return x.fail(TEXT.failure.crashed(plain(r.reason)), { level })
   const usage = r.usage

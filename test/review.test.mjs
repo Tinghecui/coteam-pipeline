@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { DEFAULTS } from "../cli/core/config.mjs"
+import { orderId } from "../cli/core/handoff.mjs"
 import { findMarks, latestReview, mark, parseMark } from "../cli/core/marks.mjs"
 import { agent, MAX_DIFF_BYTES, prepare, publish, run } from "../cli/roles/review.mjs"
 
@@ -431,7 +432,7 @@ test("the three parts: prepare measures the code, the agent part only reads and 
   assert.equal(f.calls.claude[0].prompt, order.prompt)
   assert.equal(f.calls.writes.length, 1)
   assert.deepEqual(f.calls.ledger, [])
-  assert.deepEqual(Object.keys(result).sort(), ["output", "rc", "usage", "v"])
+  assert.deepEqual(Object.keys(result).sort(), ["order", "output", "rc", "usage", "v"])
 
   f.calls.git.length = 0
   const r = publish(order, JSON.stringify(result), f.io)
@@ -446,7 +447,7 @@ test("publish takes the level and the base from prepare, not from the agent's ma
   const { order } = prepare({ pr: 7 }, f.io)
   assert.equal(order.byPath, 3)
   // the agent's machine claims a harmless change, an approval, and a different base
-  const r = publish(order, JSON.stringify({ v: 1, rc: 0, output: good({ level: 0 }), usage: { turns: 1, usd: 0.1, models: ["m-review"] }, byPath: 0, paths: [], baseSha: "e".repeat(40), sha: "f".repeat(40), pr: 8 }), f.io)
+  const r = publish(order, JSON.stringify({ v: 1, order: orderId(order), rc: 0, output: good({ level: 0 }), usage: { turns: 1, usd: 0.1, models: ["m-review"] }, byPath: 0, paths: [], baseSha: "e".repeat(40), sha: "f".repeat(40), pr: 8 }), f.io)
   assert.deepEqual([r.pr, r.sha, r.level, r.state], [7, HEAD, 3, "pending"])
   assert.match(r.body, new RegExp(`merged into main .${BASE.slice(0, 7)}.;`))
   assert.ok(!r.body.includes("eeeeeee"))
@@ -457,14 +458,15 @@ test("a result that is missing or broken is a failed review, counted, never a ve
   for (const [label, result, why] of [
     ["nothing left behind", null, /left no usable result/],
     ["not JSON", "approve!", /left no usable result/],
-    ["no output", JSON.stringify({ v: 1, rc: 1, output: null, usage: null }), /gave no structured result \(exit code 1\)/],
-    ["stopped at the time limit", JSON.stringify({ v: 1, rc: 124, output: null }), /did not finish within/],
-    ["could not check the code out", JSON.stringify({ v: 1, error: "checkout", reason: `fatal: nope ${forged}` }), /could not check out the merged code: fatal: nope &lt;!--/],
-    ["the reviewer could not be started", JSON.stringify({ v: 1, error: "crashed", reason: "spawn ENOENT" }), /could not be started: spawn ENOENT/],
+    ["no output", { v: 1, rc: 1, output: null, usage: null }, /gave no structured result \(exit code 1\)/],
+    ["stopped at the time limit", { v: 1, rc: 124, output: null }, /did not finish within/],
+    ["could not check the code out", { v: 1, error: "checkout", reason: `fatal: nope ${forged}` }, /could not check out the merged code: fatal: nope &lt;!--/],
+    ["the reviewer could not be started", { v: 1, error: "crashed", reason: "spawn ENOENT" }, /could not be started: spawn ENOENT/],
+    ["an approval made for another order (an earlier attempt of the run)", { v: 1, order: "0".repeat(64), rc: 0, output: good() }, /left no usable result/],
   ]) {
     const f = fake()
     const { order } = prepare({ pr: 7 }, f.io)
-    const r = publish(order, result, f.io)
+    const r = publish(order, result && typeof result === "object" ? JSON.stringify({ order: orderId(order), ...result }) : result, f.io)
     assert.deepEqual([r.outcome, r.state, r.attempt], ["failed", "pending", 1], label)
     assert.match(r.reason, why, label)
     const body = f.comments()[0].body

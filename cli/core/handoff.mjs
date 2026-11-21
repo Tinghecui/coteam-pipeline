@@ -27,6 +27,12 @@ export function sealOrder(order) {
   return { text, sha256: digest(text) }
 }
 
+// The same digest, from the order itself. The agent part writes it into its result, and
+// publish takes a result only for the order it holds: a workflow run that is started again
+// keeps the artifacts of its earlier attempt, and a tree made for an older order (an older
+// base commit) must never be committed on top of a newer one.
+export const orderId = (order) => digest(JSON.stringify(order))
+
 // -> the order, or throws: publish must not act on an order nobody vouches for.
 export function openOrder(text, sha256, role) {
   if (typeof text !== "string" || !/^[0-9a-f]{64}$/.test(String(sha256 || "")) || digest(text) !== sha256) throw new Error("the work order is not the one the prepare job wrote (its digest does not match); nothing was published")
@@ -63,6 +69,7 @@ export function cleanResult(raw) {
   }
   if (!r || typeof r !== "object" || Array.isArray(r)) return null
   return {
+    order: text(r.order, 64),
     outcome: text(r.outcome, 40),
     why: text(r.why, 40),
     reason: text(r.reason, 6000),

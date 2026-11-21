@@ -126,6 +126,8 @@ test("three jobs: the bot's key and the agent never share a machine", () => {
     assert.deepEqual([prepare, agent, publish].map((t) => (t.match(/actions\/download-artifact@/g) || []).length), [0, 1, 2], f.path)
     assert.match(prepare, /name: pipeline-order\n\s+path: \$\{\{ runner\.temp \}\}\/pipeline-order\/order\.json\n/, f.path)
     assert.match(agent, /if: always\(\)\n\s+uses: actions\/upload-artifact@v4\n\s+with:\n\s+name: pipeline-result\n/, f.path)
+    // a run started again replaces both, and a result is only taken for the order it was made for (handoff.orderId)
+    assert.deepEqual([prepare, agent].map((t) => (t.match(/^          overwrite: true$/gm) || []).length), [1, 1], f.path)
     assert.match(f.text, /PIPELINE_APP_KEY may not appear in that job/, f.path)
   }
 })

@@ -252,7 +252,10 @@ What crosses:
   `prepare` writes `order_sha256` to its job outputs and `publish` opens the file only
   with that digest (`openOrder`). The agent's job reads it unchecked; what it does with a
   wrong order is its own problem.
-- **result** (`result.json`, agent -> publish): `cleanResult` keeps `outcome`, `why`,
+- **result** (`result.json`, agent -> publish): it names the order it was made for
+  (`orderId`, the same digest), and `publish` takes no other: a run that is started again
+  still has the artifacts of its earlier attempt, and a tree made on an older base must not
+  be committed on a newer one. `cleanResult` keeps `order`, `outcome`, `why`,
   `reason`, `detail`, `error`, `rc`, `output`, `usage`, each of its type and cut to
   length; `cleanUsage` keeps numbers, model names and a known outage reason. Whatever the
   file says about pull requests, files, shas or levels is dropped: those come from the

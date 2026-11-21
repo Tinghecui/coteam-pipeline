@@ -21,7 +21,7 @@
 //   - started                  -> a ledger line with the outcome, the claim released, and a
 //                                 `result` mark on the issue (plus a `rework` mark on the PR)
 import { ciRuns } from "../core/decide.mjs"
-import { cleanResult } from "../core/handoff.mjs"
+import { cleanResult, orderId } from "../core/handoff.mjs"
 import { budget, claudeCooldown } from "../core/ledger.mjs"
 import { activeClaims, believedReviews, branchFor, countSince, findMarks, isAfter, issueOfBranch, lastDecision, latestReview, mark, markAuthors, releaseClaim, reworkObsolete, rowOfBranch, takesIssue, trustedComments } from "../core/marks.mjs"
 import { forbiddenHits, pathLevel } from "../core/policy.mjs"
@@ -572,7 +572,7 @@ export async function agent(order, io, { bundle }) {
     git.try(["reset", "-q", "--hard", start])
     git.try(["clean", "-qfd"])
   }
-  return { v: 1, ...res, usage: usage || { turns: 0, usd: 0, models: [] } }
+  return { v: 1, order: orderId(order), ...res, usage: usage || { turns: 0, usd: 0, models: [] } }
 }
 
 // ---------- part three: publish ----------
@@ -697,7 +697,7 @@ function judge(c, order, result, bundle) {
   const { io } = c
   const failed = (reason, detail = "") => ({ outcome: "failed", reason, detail })
   const r = cleanResult(result)
-  if (!r || !AGENT_OUTCOMES.has(r.outcome)) return failed(TEXT.noResult)
+  if (!r || r.order !== orderId(order) || !AGENT_OUTCOMES.has(r.outcome)) return failed(TEXT.noResult)
   c.usage = r.usage
   if (r.usage.unavailable) return { outcome: "unavailable", reason: TEXT.unavailable(r.usage.unavailable) }
   if (r.outcome === "unavailable") return failed(TEXT.noResult)

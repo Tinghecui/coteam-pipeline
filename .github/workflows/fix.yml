@@ -131,6 +131,8 @@ jobs:
           name: pipeline-order
           path: ${{ runner.temp }}/pipeline-order/order.json
           if-no-files-found: error
+          # A run that is started again writes its order anew.
+          overwrite: true
           retention-days: 1
 
   agent:
@@ -188,6 +190,7 @@ jobs:
           name: pipeline-result
           path: ${{ runner.temp }}/pipeline-result
           if-no-files-found: ignore
+          overwrite: true
           retention-days: 1
 
   publish:

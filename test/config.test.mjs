@@ -172,3 +172,23 @@ test("v0.3 keys: daily_runs, the status board and its label, self-hosted runners
   assert.match(problemsOf("limits:\n  daily_runs: -1\n")[0], /^limits\.daily_runs: must be a whole number >= 0/)
   assert.match(problemsOf("labels:\n  board: pipeline\n")[0], /labels\.board: "pipeline" is already used by labels\.work/)
 })
+
+test("v0.4 keys: which CLI writes and which reviews; a preset's Claude models are not carried to Codex", () => {
+  const c = loadConfig("version: 1\n")
+  assert.deepEqual([c.agents, c.review], [{ executor: "claude", reviewer: "claude" }, { independent: false }])
+  // the startup preset names Claude models; moving the reviewer to Codex drops its model, not the executor's
+  const split = loadConfig("version: 1\npreset: startup\nagents:\n  reviewer: codex\n", startup)
+  assert.deepEqual(split.agents, { executor: "claude", reviewer: "codex" })
+  assert.deepEqual(split.models, { executor: "claude-opus-5-5", reviewer: "" })
+  // a model named in the user's own file is kept
+  assert.equal(loadConfig("version: 1\npreset: startup\nagents:\n  reviewer: codex\nmodels:\n  reviewer: gpt-6-sol\n", startup).models.reviewer, "gpt-6-sol")
+  // naming the CLI the preset already uses moves nothing
+  assert.equal(loadConfig("version: 1\npreset: startup\nagents:\n  reviewer: claude\n", startup).models.reviewer, "claude-opus-5-5")
+  // a Claude model for Codex, written by the user: a problem, not a failed run later
+  assert.match(problemsOf("agents:\n  executor: codex\nmodels:\n  executor: claude-opus-5-5\n")[0], /^models\.executor: "claude-opus-5-5" is a Claude model, and agents\.executor is codex/)
+  assert.match(problemsOf("agents:\n  reviewer: gemini\n")[0], /^agents\.reviewer: must be one of: claude, codex/)
+  // independent: one CLI on both sides is refused
+  assert.match(problemsOf("review:\n  independent: true\n")[0], /^review\.independent: the executor and the reviewer are both claude/)
+  assert.equal(loadConfig("version: 1\nreview:\n  independent: true\nagents:\n  reviewer: codex\n").review.independent, true)
+  assert.match(problemsOf("review:\n  independent: maybe\n")[0], /^review\.independent: must be true or false/)
+})

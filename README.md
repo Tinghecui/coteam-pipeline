@@ -8,13 +8,13 @@ request, a second agent reviews it, and a set of risk rules decides whether the 
 request is merged without a person, waits for a default, or is put in front of an owner.
 
 Everything runs in your repository's GitHub Actions, with your own Anthropic API key (or
-Claude subscription) and a GitHub App that you create and hold the key of. The agent's job
+Claude subscription, or an OpenAI key for Codex) and a GitHub App that you create and hold the key of. The agent's job
 can run on GitHub's machines or on one of yours. There is no server; the authors of this
 project see nothing of your code or credentials.
 
 ## Status
 
-**The current release is `v0.3.0`. It is young.**
+**The current release is `v0.4.0`. It is young.**
 
 The engine (`cli/`), the reusable workflows and the templates have run end to end on a
 small public demonstration repository, with the real Claude Code CLI and the real GitHub
@@ -40,6 +40,10 @@ job on a machine of your own
 ([how](docs/install.md#run-the-agent-on-your-own-machine)). The board has run on the
 demonstration repository; a machine of one's own and a subscription token are tested only
 in the test suite so far.
+
+`v0.4.0` lets each role run the Codex CLI instead of Claude Code, for example Claude Code
+writing and Codex reviewing ([how](docs/install.md#use-codex-as-the-executor-or-the-reviewer)),
+with each CLI's quota tracked on its own and a switch that refuses one CLI on both sides.
 
 What has not been verified: a codebase of real size, or any stack but a small Node
 project; a repository owned by an organisation; answers by people who are not owners and
@@ -70,8 +74,8 @@ The same installation by hand is in [docs/install.md](docs/install.md).
 A small team with its own product, one person who can say yes or no, and the habit of
 shipping small changes that can be rolled back. The code must be on GitHub and the
 repository must be allowed to run GitHub Actions on GitHub-hosted runners. Tests and
-deployment can live anywhere. In 0.1 the agent is Claude Code only, and everything the
-pipeline writes is in English.
+deployment can live anywhere. The agent is Claude Code or the Codex CLI, and everything
+the pipeline writes is in English.
 
 It is not meant for teams that need several human approvals per change, or that cannot use
 GitHub Actions.

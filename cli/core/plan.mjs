@@ -92,7 +92,7 @@
 // the role when applying that answer failed.
 import { ciRuns, mergeable, REVIEW_RETRIES } from "./decide.mjs"
 import { appliedWords, decisionComment, fmtTime, parseAnswer, parseItem, prAskItem, prReleaseItem, stuckItem, TEXT as ITEM_TEXT } from "./items.mjs"
-import { budget, claudeCooldown, countedRuns, NOT_AN_ATTEMPT } from "./ledger.mjs"
+import { agentCooldown, budget, countedRuns, NOT_AN_ATTEMPT } from "./ledger.mjs"
 import { activeClaims, believedReviews, closedRows, countSince, findMarks, hasMark, isAfter, issueOfBranch, latestReview, mark, reworkObsolete, reworks, rowOfBranch, takesIssue, trustedComments } from "./marks.mjs"
 import { parseSpec, specProgress } from "./spec.mjs"
 import { PLAN_TEXT as TEXT } from "./text.mjs"
@@ -158,6 +158,7 @@ export function emptyPlan(mode) {
     notes: [],
     running: [],
     cooldown: null,
+    reviewCooldown: null,
     spentToday: 0,
     runsToday: 0,
     held: "",
@@ -269,11 +270,18 @@ export function planTick(state, config, now = new Date()) {
     note(TEXT.note.unattributed(rev.unknown.map((r) => r.id)))
   }
 
-  // ---- the agent cannot be used (quota, overload, login): everything waits; afterwards one probe first ----
-  let cool = claudeCooldown(ledger, now)
+  // ---- an agent CLI cannot be used (quota, overload, login): what runs on it waits; afterwards one probe first ----
+  // The executor's CLI holds new work and reworks, the reviewer's holds reviews. With one CLI
+  // on both sides (the usual case) they are the same cooldown and everything waits.
+  let cool = agentCooldown(ledger, now, config.agents?.executor || "claude")
+  const reviewerCli = config.agents?.reviewer || "claude"
+  const coolReview = reviewerCli === (config.agents?.executor || "claude") ? cool : agentCooldown(ledger, now, reviewerCli)
+  if (coolReview?.cooling) {
+    reviewsOk = false
+    if (coolReview !== cool) note(TEXT.note.cooling(`${coolReview.reason} (the reviewer, ${reviewerCli})`, coolReview.until))
+  }
   if (cool?.cooling) {
     slots = 0
-    reviewsOk = false
     note(TEXT.note.cooling(cool.reason, cool.until))
   } else if (cool) {
     const probes = fix.live.filter((r) => ms(r.created_at) >= ms(cool.until))
@@ -290,6 +298,7 @@ export function planTick(state, config, now = new Date()) {
     }
   }
   plan.cooldown = cool
+  plan.reviewCooldown = coolReview?.cooling ? coolReview : null
 
   // ---- today's spend ----
   const spend = budget(ledger, { issue: -1, limits: lim, now })
@@ -944,8 +953,8 @@ export function planTick(state, config, now = new Date()) {
   const heldWhy = (forReview) =>
     overDaily
       ? B.budget(spend.reason)
-      : cool?.cooling
-        ? B.cooling(cool.reason, cool.until)
+      : (forReview ? coolReview : cool)?.cooling
+        ? B.cooling((forReview ? coolReview : cool).reason, (forReview ? coolReview : cool).until)
         : (forReview ? !reviewKnown : !fixKnown)
           ? B.runsUnknown
           : (forReview ? rev.unknown.length : fix.unknown.length)

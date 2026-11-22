@@ -24,8 +24,12 @@ export const DEFAULTS = deepFreeze({
   base: "main",
   owners: [],
   stack: { setup: [], test: "", check: [], ui_paths: [] },
+  // The agent CLI each role runs: "claude" (Claude Code) or "codex" (the Codex CLI).
+  agents: { executor: "claude", reviewer: "claude" },
   // "" = let the agent CLI use its own default model.
   models: { executor: "", reviewer: "" },
+  // independent: true = refuse a configuration in which one CLI both writes and reviews.
+  review: { independent: false },
   risk: { forbidden: [".github/**", ".coteam/**"], level3: [], level2: [], level1: [] },
   merge: { method: "squash", auto_max_level: 0, default_after_hours: 0 },
   limits: {
@@ -70,6 +74,9 @@ const positive = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? 
 const yesNo = (v) => (typeof v === "boolean" ? "" : "must be true or false")
 const nonNegative = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? "" : "must be a number >= 0")
 
+// The agent CLIs the engine has an adapter for (cli/io/agents.mjs).
+export const AGENT_CLIS = ["claude", "codex"]
+
 const SCHEMA = {
   version: (v) => (v === 1 ? "" : "must be 1"),
   preset: (v) => (v === null || (typeof v === "string" && PRESET_NAME.test(v)) ? "" : "must be a preset name (lowercase letters, digits, - and _)"),
@@ -77,7 +84,9 @@ const SCHEMA = {
   base: str,
   owners: list,
   stack: { setup: list, test: text, check: list, ui_paths: list },
+  agents: { executor: oneOf(...AGENT_CLIS), reviewer: oneOf(...AGENT_CLIS) },
   models: { executor: text, reviewer: text },
+  review: { independent: yesNo },
   risk: { forbidden: list, level3: list, level2: list, level1: list },
   merge: {
     method: oneOf("squash", "merge", "rebase"),
@@ -143,7 +152,13 @@ function parseDoc(text, source, problems) {
 }
 
 function crossChecks(c, problems) {
-  const { limits, labels } = c
+  const { limits, labels, agents, models, review } = c
+  if (isMap(agents) && isMap(models))
+    for (const role of ["executor", "reviewer"])
+      if (agents[role] !== "claude" && /^claude-/i.test(String(models[role] || "")))
+        problems.push(`models.${role}: "${models[role]}" is a Claude model, and agents.${role} is ${agents[role]}; name one of its models, or "" for its default`)
+  if (isMap(review) && review.independent === true && isMap(agents) && agents.executor === agents.reviewer)
+    problems.push(`review.independent: the executor and the reviewer are both ${agents.executor}; set agents.reviewer to another CLI, or independent to false`)
   // The first run plus every allowed rework must fit in the per-issue run limit. The source
   // pipeline once raised the rework cap without the run cap: the executor refused its last
   // reworks at startup, left no trace on the PR, and was dispatched again on every tick.
@@ -185,6 +200,13 @@ export function loadConfig(text, presetText = null) {
     }
   }
   const config = merge(merge(DEFAULTS, preset), user)
+  // A preset names models for the CLI it was written for. When the user's file moves a role to
+  // another CLI without naming a model for it, that model is not carried over.
+  for (const role of ["executor", "reviewer"]) {
+    const moved = isMap(user.agents) && Object.hasOwn(user.agents, role) && user.agents[role] !== (preset.agents?.[role] ?? DEFAULTS.agents[role])
+    const named = isMap(user.models) && Object.hasOwn(user.models, role)
+    if (moved && !named && isMap(config.models)) config.models[role] = ""
+  }
   validate(config, SCHEMA, "", problems)
   crossChecks(config, problems)
   if (problems.length) {

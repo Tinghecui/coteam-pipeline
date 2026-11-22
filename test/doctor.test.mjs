@@ -81,7 +81,7 @@ test("a complete installation passes, with nothing written", async () => {
   assert.deepEqual(f.calls, [], "the doctor only reads")
   assert.equal(one(res, "config").state, "ok")
   assert.equal(one(res, "labels").state, "ok")
-  assert.equal(one(res, "workflow.engine").text, TEXT.callers.ok("main", "engine-org/coteam-pipeline", "v0.3.0"))
+  assert.equal(one(res, "workflow.engine").text, TEXT.callers.ok("main", "engine-org/coteam-pipeline", "v0.4.0"))
   assert.equal(one(res, "secrets").state, "ok")
   assert.equal(one(res, "variables").state, "ok")
   assert.equal(one(res, "write").state, "ok")
@@ -204,24 +204,24 @@ test("the workflows are read from the configured base branch", async () => {
 })
 
 test("engine_ref different from the ref in uses: fails", async () => {
-  const over = { [wf("pipeline-fix.yml")]: content(caller("pipeline-fix.yml", (t) => t.replace("engine_ref: v0.3.0", "engine_ref: v0.3.9"))) }
+  const over = { [wf("pipeline-fix.yml")]: content(caller("pipeline-fix.yml", (t) => t.replace("engine_ref: v0.4.0", "engine_ref: v0.4.9"))) }
   const res = await run({}, fake({ over }).io)
   const r = one(res, "workflow.fix")
   assert.equal(r.state, "FAIL")
-  assert.equal(r.text, TEXT.callers.refMismatch("pipeline-fix.yml", "v0.3.0", "v0.3.9"))
+  assert.equal(r.text, TEXT.callers.refMismatch("pipeline-fix.yml", "v0.4.0", "v0.4.9"))
   assert.equal(res.ok, false)
 })
 
 test("three callers on different engine refs fail, listing each", async () => {
-  const over = { [wf("pipeline-tick.yml")]: content(caller("pipeline-tick.yml", (t) => t.replaceAll("v0.3.0", "v0.2.1"))) }
+  const over = { [wf("pipeline-tick.yml")]: content(caller("pipeline-tick.yml", (t) => t.replaceAll("v0.4.0", "v0.2.1"))) }
   const res = await run({}, fake({ over }).io)
   const r = one(res, "workflow.engine")
   assert.equal(r.state, "FAIL")
-  assert.match(r.text, /pipeline-tick\.yml: engine-org\/coteam-pipeline@v0\.2\.1; pipeline-fix\.yml: engine-org\/coteam-pipeline@v0\.3\.0/)
+  assert.match(r.text, /pipeline-tick\.yml: engine-org\/coteam-pipeline@v0\.2\.1; pipeline-fix\.yml: engine-org\/coteam-pipeline@v0\.4\.0/)
 })
 
 test("a branch as the engine ref warns; a tag or a full sha does not", async () => {
-  const all = (ref) => Object.fromEntries(CALLERS.map((c) => [wf(c.file), content(caller(c.file, (t) => t.replaceAll("v0.3.0", ref)))]))
+  const all = (ref) => Object.fromEntries(CALLERS.map((c) => [wf(c.file), content(caller(c.file, (t) => t.replaceAll("v0.4.0", ref)))]))
   const onMain = await run({}, fake({ over: all("main") }).io)
   assert.equal(one(onMain, "workflow.ref").state, "warn")
   assert.equal(onMain.ok, true)
@@ -258,8 +258,8 @@ test("secrets: inherit warns; a lost run-name, a lost dispatch trigger and an ex
 test("parseCaller reads the templates and is not fooled by comments", () => {
   for (const c of CALLERS) {
     const p = parseCaller(file(`templates/workflows/${c.file}`))
-    assert.deepEqual(p.uses, { repo: "Tinghecui/coteam-pipeline", reusable: c.reusable, ref: "v0.3.0" })
-    assert.equal(p.engineRef, "v0.3.0")
+    assert.deepEqual(p.uses, { repo: "Tinghecui/coteam-pipeline", reusable: c.reusable, ref: "v0.4.0" })
+    assert.equal(p.engineRef, "v0.4.0")
     assert.equal(p.inherit, false)
   }
   const p = parseCaller('# uses: a/b/.github/workflows/tick.yml@old\non: [push, workflow_dispatch]\njobs:\n  j:\n    uses: "x/y/.github/workflows/tick.yml@abc" # note\n    with:\n      engine_ref: "abc"\n    # secrets: inherit\n')
@@ -353,6 +353,42 @@ test("the agent's credential: an API key or a subscription token, or the login o
   assert.equal(one(pub, "runs_on").state, "FAIL")
   assert.match(one(pub, "runs_on").hint, /self_hosted\.allow_public: true/)
   assert.equal(one(await run({}, fake({ over: { ...secrets("ANTHROPIC_API_KEY"), ...vars("[self-hosted") } }).io), "runs_on").state, "FAIL")
+})
+
+test("Codex as the reviewer: its own credential, the choice said, a missing run limit warned about", async () => {
+  const secrets = (...names) => ({ "actions/secrets?per_page=100": { secrets: [{ name: "PIPELINE_APP_KEY" }, ...names.map((name) => ({ name }))] } })
+  const split = config({ agents: { executor: "claude", reviewer: "codex" } })
+  const res = await run({}, fake({ cfg: split, over: secrets("ANTHROPIC_API_KEY", "OPENAI_API_KEY") }).io)
+  assert.equal(one(res, "agents").text, "the executor runs claude, the reviewer codex")
+  assert.equal(of(res, "agents.same").length, 0)
+  assert.equal(one(res, "secrets.model").state, "ok")
+  assert.equal(one(res, "secrets.model.codex").state, "ok")
+  assert.equal(one(res, "agents.cost").state, "warn")
+  assert.match(one(res, "agents.cost").hint, /limits\.daily_runs/)
+  // with a run limit, nothing to warn about
+  const capped = await run({}, fake({ cfg: { ...split, limits: { ...split.limits, daily_runs: 20 } }, over: secrets("ANTHROPIC_API_KEY", "OPENAI_API_KEY") }).io)
+  assert.equal(of(capped, "agents.cost").length, 0)
+  // no OpenAI key, on GitHub's machines: failed, with the command
+  const none = await run({}, fake({ cfg: split, over: secrets("ANTHROPIC_API_KEY") }).io)
+  assert.equal(one(none, "secrets.model.codex").state, "FAIL")
+  assert.match(one(none, "secrets.model.codex").text, /the reviewer runs the Codex CLI/)
+  assert.match(one(none, "secrets.model.codex").hint, /gh secret set OPENAI_API_KEY --repo acme\/app/)
+  // a caller from before v0.4.0 does not pass it
+  const old = Object.fromEntries(["pipeline-fix.yml", "pipeline-review.yml"].map((n) => [wf(n), content(caller(n, (t) => t.replace(/^.*OPENAI_API_KEY.*\n/gm, "")))]))
+  const oldKey = await run({}, fake({ cfg: split, over: { ...secrets("ANTHROPIC_API_KEY", "OPENAI_API_KEY"), ...old } }).io)
+  assert.match(one(oldKey, "workflow.review.secret").text, /OPENAI_API_KEY is set but pipeline-review\.yml does not pass it to the engine \(a caller from before v0\.4\.0\)/)
+  // Codex on both sides: no Claude credential is asked for
+  const codex = await run({}, fake({ cfg: config({ agents: { executor: "codex", reviewer: "codex" } }), over: secrets("OPENAI_API_KEY") }).io)
+  assert.equal(of(codex, "secrets.model").length, 0)
+  assert.equal(one(codex, "agents.same").state, "info")
+})
+
+test("one CLI on both sides is said, with how to review with another", async () => {
+  const res = await run({}, fake().io)
+  assert.equal(one(res, "agents").text, "the executor and the reviewer both run claude")
+  assert.equal(one(res, "agents.same").state, "info")
+  assert.match(one(res, "agents.same").hint, /review\.independent: true/)
+  assert.equal(of(res, "agents.cost").length, 0)
 })
 
 test("a token that may not list secrets or variables: cannot check, not a failure", async () => {

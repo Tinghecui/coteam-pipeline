@@ -312,6 +312,31 @@ that `stack.check` passed, and the usage figures.
   secrets; the first wins when both are set; with neither, the CLI's own login on the
   machine. Empty values are not passed to the agent.
 
+## Agent CLIs (added in `v0.4.0`)
+
+- **Adapters.** `io/agent.mjs` runs an agent CLI (own session, time limit, prompt on stdin,
+  leftovers killed) and filters its environment: every CLI's credential variables
+  (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`) are removed except its own. What
+  differs is an adapter, `io/claude.mjs` or `io/codex.mjs` (registry: `io/agents.mjs`):
+  `args`, `result(raw, { rc, stderr, last, now, model })`, `keepEnv`, `credentialEnv`,
+  `prepare` (files to write first), `scratch`. `io.agent({ cli, ...opts })` picks one;
+  `io.machineProblem(cli)` checks that CLI's version.
+- **Codex.** `codex exec --json --ephemeral --output-schema F --output-last-message F -`.
+  Our schemas leave fields out of `required`; Codex's API wants all of them, so
+  `strictSchema` makes those nullable and `stripNulls` removes the nulls from the answer.
+  Usage is tokens (`usd: 0`). Outage: the text of `turn.failed` / `error` events (or
+  stderr) through `ledger.unavailableFromText`; a reset time from "try again in/at". The
+  executor runs without Codex's sandbox; the reviewer in its read-only sandbox when
+  `codex sandbox -- echo` works on the machine, without it otherwise (logged).
+- **Config.** `agents: { executor, reviewer }` (`claude` | `codex`), `review.independent`
+  (refuse one CLI on both sides). A preset's model for a role the user's file moves to
+  another CLI is dropped; a Claude model name given for Codex is a config error.
+- **Order and ledger.** `prepare` puts the CLI in the order (`cli`) and in its job outputs
+  (`agent_cli`, which picks the install step on GitHub's machines). Ledger lines carry
+  `agent`; a line without it is Claude Code's. `ledger.agentCooldown(entries, now, cli)`:
+  the tick holds new work and reworks on the executor's CLI's cooldown, reviews on the
+  reviewer's.
+
 ## Roles and io (added after the core landed)
 
 Every role is `cli/roles/<name>.mjs` exporting `async function run(opts, io) -> {ok, ...}`

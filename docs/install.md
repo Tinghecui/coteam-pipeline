@@ -1,6 +1,6 @@
 # Installing the pipeline by hand
 
-> **Status: `v0.3.0` is the current release, and it is young.** The engine has run end to
+> **Status: `v0.4.0` is the current release, and it is young.** The engine has run end to
 > end on a small demonstration repository, and the installer once from an empty start.
 > Expect corrections.
 
@@ -36,7 +36,7 @@ You need:
   [Use a Claude subscription](#use-a-claude-subscription-instead-of-an-api-key));
 - the `gh` command line tool, logged in (`gh auth status`), for the commands below.
 
-In the commands, `ORG/REPO` is your repository, and `Tinghecui/coteam-pipeline@v0.3.0` stands
+In the commands, `ORG/REPO` is your repository, and `Tinghecui/coteam-pipeline@v0.4.0` stands
 for the engine repository and the release you install.
 
 ## 1. Create the GitHub App (the bot's identity)
@@ -96,6 +96,7 @@ gh variable set PIPELINE_BOT --repo ORG/REPO --body "acme-pipeline[bot]"   # opt
 | `PIPELINE_APP_KEY` | secret | The App's private key, the whole PEM file. |
 | `ANTHROPIC_API_KEY` | secret | Your Anthropic API key. It is the only credential the agent is given. Set a spend limit on it in the Anthropic console as a second brake. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret, instead of the key | A Claude subscription token, made with `claude setup-token`. Used when there is no `ANTHROPIC_API_KEY`. See [Use a Claude subscription](#use-a-claude-subscription-instead-of-an-api-key). |
+| `OPENAI_API_KEY` | secret, for Codex | Your OpenAI API key, when the config has the Codex CLI write or review (`agents:`). Given only to Codex. See [Use Codex](#use-codex-as-the-executor-or-the-reviewer). |
 | `PIPELINE_APP_ID` | variable | The App ID from step 1. |
 | `PIPELINE_AGENT_RUNS_ON` | variable, optional | Where the agent's job runs. Empty or unset: GitHub's machines. See [Run the agent on your own machine](#run-the-agent-on-your-own-machine). |
 | `PIPELINE_BOT` | variable, optional | The login the App writes as: `<app-slug>[bot]`, where the slug is the last part of the App's public page, `github.com/apps/<app-slug>`. Used for one thing: `pipeline-tick.yml` skips the events caused by the bot's own comments and labels, which would otherwise each start a dispatcher round that finds nothing to do. |
@@ -124,8 +125,8 @@ From the engine repository, at the release you install:
 
 Keep the file names: the engine starts the workflows by these names.
 
-In each workflow, replace `Tinghecui/coteam-pipeline` with the engine repository and `v0.3.0`
-with the release, in **both** places (`uses: ...@v0.3.0` and `engine_ref: v0.3.0`). The two
+In each workflow, replace `Tinghecui/coteam-pipeline` with the engine repository and `v0.4.0`
+with the release, in **both** places (`uses: ...@v0.4.0` and `engine_ref: v0.4.0`). The two
 must be equal: the first picks the workflow, the second the code it runs. Use a release tag
 or a full commit SHA, not a branch, so that the pipeline changes only when you change it.
 
@@ -179,7 +180,7 @@ The doctor checks the installation and prints one line per check with what to do
 Run it on your machine, in a checkout of your repository, with a checkout of the engine next to it:
 
 ```sh
-git clone --depth 1 --branch v0.3.0 https://github.com/Tinghecui/coteam-pipeline ../coteam-pipeline
+git clone --depth 1 --branch v0.4.0 https://github.com/Tinghecui/coteam-pipeline ../coteam-pipeline
 GITHUB_REPOSITORY=ORG/REPO PIPELINE_TOKEN="$(gh auth token)" node ../coteam-pipeline/cli/main.mjs doctor
 ```
 
@@ -309,8 +310,8 @@ two each.
 3. On that machine, as that user, run the machine check:
 
    ```sh
-   git clone --depth 1 --branch v0.3.0 https://github.com/Tinghecui/coteam-pipeline ~/coteam-pipeline
-   node ~/coteam-pipeline/cli/main.mjs doctor --runner --try
+   git clone --depth 1 --branch v0.4.0 https://github.com/Tinghecui/coteam-pipeline ~/coteam-pipeline
+   node ~/coteam-pipeline/cli/main.mjs doctor --runner --try                 # add --cli codex (or --cli claude,codex) for Codex
    ```
 
    It fails when the CLI is missing or too old, when it is not logged in, or when this user
@@ -362,6 +363,46 @@ an estimate, not a charge. To cap how much the pipeline takes of your subscripti
 
 Check that your subscription's terms allow this use.
 
+## Use Codex as the executor or the reviewer
+
+The executor and the reviewer can each run the [Codex CLI](https://github.com/openai/codex)
+instead of Claude Code. A reviewer that is not the model that wrote the code is the usual
+reason:
+
+```yaml
+agents:
+  executor: claude
+  reviewer: codex
+```
+
+- **Credential**: on GitHub's machines, store an OpenAI API key as the secret
+  `OPENAI_API_KEY` (`gh secret set OPENAI_API_KEY --repo ORG/REPO`). Each CLI is given only
+  its own credential: Claude Code never sees the OpenAI key, Codex never sees the Anthropic
+  one. On a machine of your own, log that machine's Codex in (`codex login`) instead, and
+  check it with `doctor --runner --cli codex --try`; its own `~/.codex/config.toml` is used,
+  so a provider set there keeps working.
+- **Models**: `models.reviewer` (or `.executor`) names a Codex model, or `""` for its
+  default. A preset's Claude model is not carried over to a role you move to Codex.
+- **Cost**: Codex reports tokens, not dollars. Its runs are recorded at $0, so
+  `limits.daily_usd` and `limits.issue_max_usd` do not hold them back: set
+  `limits.daily_runs`. `limits.issue_max_runs` counts as before. The doctor warns when
+  Codex is used and `daily_runs` is 0.
+- **Quota**: when Codex is out of quota or logged out, what runs on Codex waits and the
+  rest goes on: with Claude Code writing and Codex reviewing, a Codex outage holds the
+  reviews and not new work.
+- **Upgrading from `v0.3.0`**: copy the `OPENAI_API_KEY:` line of the `secrets:` block of
+  `templates/workflows/pipeline-fix.yml` and `pipeline-review.yml` into yours; the doctor
+  says when it is missing. GitHub's machines install the Codex version given by the
+  `codex_version` input.
+- **To keep the two sides apart**, set `review: { independent: true }`: the config is then
+  refused when the executor and the reviewer are the same CLI.
+
+The executor runs Codex without Codex's own sandbox, for the same reason Claude Code's
+shell is open: it has to install, build and test. The reviewer runs it in Codex's read-only
+sandbox where that sandbox can start. On Linux it needs user namespaces, which GitHub's
+machines and many containers do not allow; there the reviewer runs without it, and the job
+log says so (see the threat model below).
+
 ## What runs where and what it can access
 
 The executor and the reviewer each run as **three jobs on three separate runners**. The
@@ -373,7 +414,7 @@ still runs each of them as one job. See "Known gaps" below for what that means.)
 |---|---|---|
 | Dispatcher (`pipeline-tick`) | A GitHub-hosted runner in your repository's Actions | The App key. No model key. Never runs the agent and never checks out a pull request's code. |
 | Executor and reviewer, job 1: `prepare` | Its own runner | The App key. No model key. Reads the issue and the pull request, decides whether the run may start, writes the work order (the prompt, the commits to start from). Runs the engine and git; nothing from your repository is executed. |
-| Executor and reviewer, job 2: the agent | Its own runner: GitHub's, or one of yours (`PIPELINE_AGENT_RUNS_ON`) | The model credential (the API key, the subscription token, or the login of your machine's Claude Code), and the workflow's built-in token limited to reading this repository's contents (that is how it fetches the code). **No App key**: this job has nothing it could push, comment or merge with. Runs `stack.setup`, the agent and `stack.check`. |
+| Executor and reviewer, job 2: the agent | Its own runner: GitHub's, or one of yours (`PIPELINE_AGENT_RUNS_ON`) | The model credential of the CLI the role runs (the Anthropic key or subscription token, the OpenAI key, or the login of your machine's CLI), and the workflow's built-in token limited to reading this repository's contents (that is how it fetches the code). **No App key**: this job has nothing it could push, comment or merge with. Runs `stack.setup`, the agent and `stack.check`. |
 | Executor and reviewer, job 3: `publish` | Its own runner | The App key. No model key. Takes what job 2 left, checks it, and writes to GitHub. Runs the engine and git; never the agent, never your code. |
 | The engine's code | Checked out from the engine repository at the ref you pinned | Nothing of its own. No server, no telemetry. |
 
@@ -412,8 +453,9 @@ still runs each of them as one job. See "Known gaps" below for what that means.)
   refused by the publishing job before anything is pushed, and the App has no Workflows
   permission as a second lock.
 - **Pull requests from forks** are ignored by all three workflows.
-- **Where your code goes**: to Anthropic's API, as part of the agent's work, under your API
-  key and your agreement with Anthropic. Between the jobs, the work order (issue text and
+- **Where your code goes**: to the model provider's API (Anthropic's, and OpenAI's if you
+  use Codex), as part of the agent's work, under your key and your agreement with that
+  provider. Between the jobs, the work order (issue text and
   the prompt) and the result (the change) are stored for one day as artifacts of the
   workflow run, readable by whoever can read the repository's Actions. Nowhere else.
 - **Third-party actions**: only `actions/checkout`, `actions/setup-node`,
@@ -421,7 +463,8 @@ still runs each of them as one job. See "Known gaps" below for what that means.)
   To pin them, and the engine, by commit SHA, fork the engine repository, pin them in its
   three reusable workflows, and point your callers (and `engine_repository`) at the fork.
   The Claude Code CLI is installed from npm at the exact version given by the
-  `claude_code_version` input, in the agent's job only.
+  `claude_code_version` input, the Codex CLI at `codex_version`, in the agent's job only,
+  and only the one the role runs.
 
 ## Threat model and known gaps
 
@@ -522,13 +565,22 @@ engine at the ref you pinned, GitHub and Anthropic are trusted.
   to separate jobs, running the agent as a separate unprivileged OS user on one machine,
   was not built: with passwordless `sudo` on the hosted runners it would have protected
   nothing there.)
+- **Codex has no list of refused commands.** Claude Code's executor is refused `git push`,
+  `gh`, `curl` and `wget` by name (which a determined agent can get around); Codex's is not,
+  because Codex has no such setting. Either way the job holds no token that can push.
+- **Codex's reviewer may run without a sandbox.** Where Codex's read-only sandbox cannot
+  start (GitHub's Linux machines among them), the reviewer can run any command in its
+  job, including code from the pull request it reviews, next to the OpenAI key. The job
+  holds no token that can write to GitHub, and only the reviewer's answer is used. Claude
+  Code's reviewer is limited by its tool list on every machine.
 - **A subscription login on your machine is a credential the agent can use.** The agent
   can spend your subscription's usage, and send its login elsewhere, the same way it can
   the API key. `limits.daily_runs` caps what the pipeline itself starts.
 
-**Upgrading.** From `v0.1.0` or `v0.2.0`: change the version in your three workflow files
-(twice in each: `uses: ...@` and `engine_ref`). That is all `v0.3.0` needs; the first
-round then opens the status board (create the `pipeline:board` label first, or let the
+**Upgrading.** From `v0.1.0`, `v0.2.0` or `v0.3.0`: change the version in your three
+workflow files (twice in each: `uses: ...@` and `engine_ref`). That is all `v0.4.0` needs
+unless you use Codex (see [Use Codex](#use-codex-as-the-executor-or-the-reviewer)). From
+before `v0.3.0`, the first round then opens the status board (create the `pipeline:board` label first, or let the
 doctor's `--fix` do it; the tick creates it otherwise). To use a subscription token or a
 machine of your own, also copy the `agent_runs_on:` line and the `secrets:` block of
 `templates/workflows/pipeline-fix.yml` and `pipeline-review.yml` into yours; the doctor
@@ -544,8 +596,8 @@ says when a caller does not pass what you have set.
   by itself.)
 - Keep `mode: record` until you have watched the pipeline work, and do not add deploy
   keys, cloud credentials or production access to the pipeline's workflows.
-- If a run looks wrong, rotate the Anthropic key (or log the machine's Claude Code out and
-  in again). The App key was not on that machine.
+- If a run looks wrong, rotate the model key it used (or log the machine's CLI out and in
+  again). The App key was not on that machine.
 
 ## Known limits of 0.1
 
@@ -556,9 +608,8 @@ says when a caller does not pass what you have set.
   kept out of the agent's environment and out of `stack.setup`, so a private npm, PyPI or
   container registry cannot be reached by the commands the pipeline runs. If your project
   cannot install without one, 0.1 is not for it yet.
-- **Only Claude Code.** The executor and the reviewer are both the Claude Code CLI, with
-  your Anthropic API key or your Claude subscription. No other agent or model vendor yet,
-  and no second reviewer model.
+- **Claude Code and Codex only.** Each role runs one of the two. Gemini and others are not
+  supported yet.
 - **English only.** Spec headings, labels, comments and prompts are English.
 - **No acceptance testing yet.** The pipeline stops at the merge. Nothing checks the
   deployed result against the acceptance criteria; that is planned for a later version.
@@ -566,7 +617,8 @@ says when a caller does not pass what you have set.
   base branch is sent back to the executor, which resolves the conflict in a merge commit;
   when that does not work the pull request is put in front of an owner.
 - **One repository per installation.** Work that spans repositories is not coordinated.
-- **Cost**: model usage is billed to your Anthropic key and runner minutes to your GitHub
-  plan (private repositories). The limits in the config cap the first, not the second.
+- **Cost**: model usage is billed to your Anthropic (and OpenAI) key and runner minutes to
+  your GitHub plan (private repositories). The limits in the config cap the first, not the
+  second; for Codex, only by the number of runs.
 - **Base branch = default branch** is the tested setup. Workflow files must be on the
   default branch for their triggers to work, and on `base` to be dispatched.

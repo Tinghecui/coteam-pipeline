@@ -43,11 +43,22 @@ stack:
   # Files that change what users see. A change that touches them is treated as visible.
   ui_paths: ["src/**/*.tsx", "src/**/*.css"]
 
-# Which model writes and which model reviews (names as the Claude Code CLI takes them).
-# Leave out to use the preset's choice.
+# Which agent CLI writes the code and which reviews it: claude (Claude Code) or codex (the
+# Codex CLI). Each needs its own credential (docs/install.md). Leave out for Claude Code.
+# agents:
+#   executor: claude
+#   reviewer: codex
+
+# Which model writes and which model reviews (names as the CLI takes them; "" = its default).
+# Leave out to use the preset's choice; a role moved to another CLI starts from "".
 # models:
 #   executor: claude-opus-5-5
 #   reviewer: claude-opus-5-5
+
+# A reviewer that is the same CLI as the executor tends to agree with it.
+# true: refuse to run with the same CLI on both sides.
+# review:
+#   independent: false
 
 # Risk by path. A pull request's level is the highest level of any file it touches, or the
 # level the reviewer gives it, whichever is higher. Patterns are globs (`*` within a

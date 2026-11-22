@@ -89,3 +89,26 @@ test("GitHub credentials the agent could use fail; helpers, SSH keys and other c
   assert.match(res.results.find((r) => r.id === "github.header").text, /http\.https:\/\/github\.com\/\.extraheader/)
   assert.equal(RUNNER_TEXT.summary(res.counts), "Not ready: 3 ok, 4 warnings, 5 failed.")
 })
+
+test("--cli codex: the Codex CLI, its login file or key, and its one-question try", () => {
+  const codexAnswers = { "codex --version": { rc: 0, stdout: "codex-cli 0.170.0\n", stderr: "" } }
+  const clis = [{ cli: "claude", bin: "claude" }, { cli: "codex", bin: "codex" }]
+  const both = checkMachine(machine({ files: { [`${HOME}/.claude/.credentials.json`]: "{}", [`${HOME}/.codex/auth.json`]: '{"tokens":"never printed"}' }, answers: codexAnswers }).deps, { clis })
+  assert.deepEqual(ids(both), { git: "ok", cli: "ok", login: "ok", "cli.codex": "ok", "login.codex": "ok", github: "ok" })
+  assert.ok(!JSON.stringify(both).includes("never printed"))
+  // CODEX_HOME elsewhere, or a key in the environment
+  assert.equal(ids(checkMachine(machine({ env: { CODEX_HOME: "/srv/cx" }, files: { "/srv/cx/auth.json": "{}" }, answers: codexAnswers }).deps, { clis: [clis[1]] }))["login.codex"], "ok")
+  assert.equal(ids(checkMachine(machine({ env: { OPENAI_API_KEY: "k" }, answers: codexAnswers }).deps, { clis: [clis[1]] }))["login.codex"], "info")
+  const none = checkMachine(machine({ answers: codexAnswers }).deps, { clis: [clis[1]] })
+  assert.equal(ids(none)["login.codex"], "FAIL")
+  assert.match(none.results.find((r) => r.id === "login.codex").hint, /codex login/)
+  // too old
+  const old = checkMachine(machine({ answers: { "codex --version": { rc: 0, stdout: "codex-cli 0.120.3\n", stderr: "" } } }).deps, { clis: [clis[1]] })
+  assert.match(old.results.find((r) => r.id === "cli.codex").text, /version 0\.120\.3; the engine needs 0\.162\.0/)
+  // --try: one question, answered or not
+  const answered = { ...codexAnswers, "codex exec": { rc: 0, stdout: '{"type":"turn.started"}\n{"type":"turn.completed","usage":{}}\n', stderr: "" } }
+  assert.equal(ids(checkMachine(machine({ files: { [`${HOME}/.codex/auth.json`]: "{}" }, answers: answered }).deps, { clis: [clis[1]], tryAgent: true }))["login.codex.try"], "ok")
+  const refused = { ...codexAnswers, "codex exec": { rc: 1, stdout: '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit."}}\n', stderr: "" } }
+  const r = checkMachine(machine({ files: { [`${HOME}/.codex/auth.json`]: "{}" }, answers: refused }).deps, { clis: [clis[1]], tryAgent: true })
+  assert.match(r.results.find((x) => x.id === "login.codex.try").text, /"codex" did not answer a test question: You've hit your usage limit\./)
+})

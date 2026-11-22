@@ -30,6 +30,8 @@ export const SECRETS = ["PIPELINE_APP_KEY"]
 // The agent's credential: one of these, or (when the agent's job runs on a machine of the
 // team's own) that machine's own login.
 export const MODEL_SECRETS = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+// The Codex CLI's (agents.executor or agents.reviewer: codex).
+export const CODEX_SECRETS = ["OPENAI_API_KEY"]
 export const VARIABLES = ["PIPELINE_APP_ID"]
 export const BOT_VARIABLE = "PIPELINE_BOT"
 export const RUNS_ON_VARIABLE = "PIPELINE_AGENT_RUNS_ON"
@@ -96,7 +98,7 @@ export const TEXT = {
     extraTrigger: (file, trigger) => `${file} is also started by "${trigger}": it must be started by workflow_dispatch only`,
     extraTriggerHint: "Remove the other triggers. Only the dispatcher (or a person, from the Actions tab) starts it, with the number of the issue or pull request as input; an event cannot supply that, and a pull request event from a fork would run it on a stranger's say-so.",
     floating: (ref) => `the engine ref "${ref}" is a branch, not a release tag or a commit: the pipeline changes whenever that branch does`,
-    floatingHint: "Use a release tag (v0.3.0) or a full commit SHA.",
+    floatingHint: "Use a release tag (v0.4.0) or a full commit SHA.",
   },
   settings: {
     ok: (kind, names) => `${kind} present: ${names.join(", ")}`,
@@ -121,8 +123,20 @@ export const TEXT = {
     missingHint: (repo) => [`An API key: gh secret set ANTHROPIC_API_KEY --repo ${repo}`, `Or a Claude subscription: run \`claude setup-token\`, then gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${repo}`],
     cannot: "the agent's credential: cannot check (this token may not list secrets)",
     cannotHint: `Look in Settings > Secrets and variables > Actions for ${MODEL_SECRETS.join(" or ")}.`,
-    notPassed: (file, name) => `the secret ${name} is set but ${file} does not pass it to the engine (a caller from before v0.3.0)`,
+    notPassed: (file, name) => `the secret ${name} is set but ${file} does not pass it to the engine (a caller from before ${name === "OPENAI_API_KEY" ? "v0.4.0" : "v0.3.0"})`,
     notPassedHint: (file) => `Copy the secrets: block from templates/workflows/${file}.`,
+    codexOk: "the Codex CLI's credential: OPENAI_API_KEY",
+    codexMachine: (where) => `no OPENAI_API_KEY: the agent's job runs on ${where} and uses the login of that machine's own Codex CLI`,
+    codexMachineHint: "Check that machine with the doctor's --runner mode and --cli codex, run there as the runner's user.",
+    codexMissing: (roles) => `the ${roles} runs the Codex CLI, which has no credential: OPENAI_API_KEY is not set, and the agent's job runs on GitHub's machines`,
+    codexMissingHint: (repo) => `gh secret set OPENAI_API_KEY --repo ${repo}`,
+  },
+  agents: {
+    which: (e, r) => (e === r ? `the executor and the reviewer both run ${e}` : `the executor runs ${e}, the reviewer ${r}`),
+    same: (cli) => `one CLI (${cli}) writes the code and reviews it: a reviewer that is the same model as the author tends to agree with it`,
+    sameHint: "To review with another one: agents: { reviewer: codex } (or claude) in .coteam/pipeline.yml, with its credential. review.independent: true then keeps it that way.",
+    codexNoCost: "the Codex CLI reports no cost: limits.daily_usd and limits.issue_max_usd do not hold back its runs, and limits.daily_runs is 0 (no limit)",
+    codexNoCostHint: "Set limits.daily_runs (agent runs a day) in .coteam/pipeline.yml; limits.issue_max_runs still counts per issue.",
   },
   runsOn: {
     badJson: (value) => `the variable PIPELINE_AGENT_RUNS_ON is "${value}": a value that starts with "[" must be a JSON list of labels, e.g. ["self-hosted", "pipeline"]`,
@@ -378,16 +392,34 @@ export async function run(opts, io) {
   const variables = await listNames(["actions/variables?per_page=100", "actions/organization-variables?per_page=100"], "variables")
   presence("variables", "variables", VARIABLES, variables, TEXT.settings.variableHint)
 
-  // ---- the agent's credential, and where its job runs ----
+  // ---- which CLI writes and which reviews, and each one's credential ----
   const where = String(runsOnValue || "").trim()
   const agents = parsed.filter((c) => c.reusable !== "tick")
+  const cliOf = { executor: config.agents?.executor || "claude", reviewer: config.agents?.reviewer || "claude" }
+  const uses = (cli) => Object.values(cliOf).includes(cli)
+  add("agents", "info", TEXT.agents.which(cliOf.executor, cliOf.reviewer))
+  if (cliOf.executor === cliOf.reviewer) add("agents.same", "info", TEXT.agents.same(cliOf.executor), TEXT.agents.sameHint)
+  if (uses("codex") && !(config.limits.daily_runs > 0)) add("agents.cost", "warn", TEXT.agents.codexNoCost, TEXT.agents.codexNoCostHint)
+  const notPassed = (have) => {
+    for (const c of agents) for (const n of have) if (!c.secrets.includes(n)) add(`workflow.${c.reusable}.secret`, "warn", TEXT.model.notPassed(c.file, n), TEXT.model.notPassedHint(c.file))
+  }
   if (!secrets) add("secrets.model", "skip", TEXT.model.cannot, TEXT.model.cannotHint)
   else {
-    const have = MODEL_SECRETS.filter((n) => secrets.has(n))
-    if (have.length) add("secrets.model", "ok", TEXT.model.ok(have))
-    else if (where) add("secrets.model", "info", TEXT.model.machine(where), TEXT.model.machineHint)
-    else add("secrets.model", "FAIL", TEXT.model.missing, TEXT.model.missingHint(repo))
-    for (const c of agents) for (const n of have) if (!c.secrets.includes(n)) add(`workflow.${c.reusable}.secret`, "warn", TEXT.model.notPassed(c.file, n), TEXT.model.notPassedHint(c.file))
+    if (uses("claude")) {
+      const have = MODEL_SECRETS.filter((n) => secrets.has(n))
+      if (have.length) add("secrets.model", "ok", TEXT.model.ok(have))
+      else if (where) add("secrets.model", "info", TEXT.model.machine(where), TEXT.model.machineHint)
+      else add("secrets.model", "FAIL", TEXT.model.missing, TEXT.model.missingHint(repo))
+      notPassed(have)
+    }
+    if (uses("codex")) {
+      const roles = ["executor", "reviewer"].filter((r) => cliOf[r] === "codex").join(" and ")
+      const have = CODEX_SECRETS.filter((n) => secrets.has(n))
+      if (have.length) add("secrets.model.codex", "ok", TEXT.model.codexOk)
+      else if (where) add("secrets.model.codex", "info", TEXT.model.codexMachine(where), TEXT.model.codexMachineHint)
+      else add("secrets.model.codex", "FAIL", TEXT.model.codexMissing(roles), TEXT.model.codexMissingHint(repo))
+      notPassed(have)
+    }
   }
 
   // ---- the pipeline's own login, and the optional PIPELINE_BOT variable ----

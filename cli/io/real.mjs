@@ -10,12 +10,21 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve, parse as parsePath } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadConfig, presetOf } from "../core/config.mjs"
-import { agentEnv, BIN, runClaude, SCRATCH_PATHS } from "./claude.mjs"
+import { agentEnv, runAgent } from "./agent.mjs"
+import { AGENTS } from "./agents.mjs"
+import { sandboxWorks } from "./codex.mjs"
 import { makeGh } from "./gh.mjs"
 import { makeGit } from "./git.mjs"
 import { makeLedger } from "./ledger-io.mjs"
 import { machineProblem } from "./machine.mjs"
 import { must, run, shell } from "./proc.mjs"
+
+const TEXT = {
+  noSandbox: "reviewer: the Codex CLI's sandbox cannot start on this machine (on Linux it needs user namespaces); the reviewer runs without it. Its job holds no token that can write anywhere, and only its answer is used.",
+}
+
+// The binary of an agent CLI: PIPELINE_<NAME>_BIN, else its usual name on the PATH.
+export const agentBin = (env, adapter) => String(env?.[`PIPELINE_${adapter.name.toUpperCase()}_BIN`] || "").trim() || adapter.bin
 
 // The engine's own checkout (prompts/, presets/: text, read before the agent starts).
 export const HOME = resolve(fileURLToPath(new URL("../..", import.meta.url)))
@@ -204,14 +213,27 @@ export function makeIo({ env = process.env, cwd = process.cwd(), log = (line) =>
   const botLogin = botLoginSource({ env, token, gh, log })
 
   let workDir = env.PIPELINE_WORK_DIR || ""
-  // The agent CLI: "claude" on the PATH, or the one PIPELINE_CLAUDE_BIN names (a self-hosted
-  // runner sets it in its .env file when the CLI is somewhere else).
-  const bin = String(env.PIPELINE_CLAUDE_BIN || "").trim() || BIN
-  const claude = (opts) => {
-    workDir ||= mkdtempSync(join(tmp, "pipeline-work-"))
-    return runClaude(opts, { env, workDir, log, bin })
+  // The agent CLIs: "claude" / "codex" on the PATH, or the ones PIPELINE_CLAUDE_BIN and
+  // PIPELINE_CODEX_BIN name (a self-hosted runner sets them in its .env file when a CLI is
+  // somewhere else).
+  const adapterOf = (cli) => {
+    const a = AGENTS[cli || "claude"]
+    if (!a) throw new Error(`no agent CLI called ${JSON.stringify(cli)}`)
+    return a
   }
-  claude.scratch = SCRATCH_PATHS
+  const binOf = (cli) => agentBin(env, adapterOf(cli))
+  // opts: cli/io/agent.mjs runAgent, plus `cli` ("claude" when not given).
+  const agent = ({ cli, ...opts }) => {
+    workDir ||= mkdtempSync(join(tmp, "pipeline-work-"))
+    // Codex's read-only sandbox for the reviewer, if it can start here (cli/io/codex.mjs).
+    if (cli === "codex" && opts.tools === "readonly") {
+      opts.sandbox = sandboxWorks(run, binOf(cli), opts.cwd)
+      if (!opts.sandbox) log(TEXT.noSandbox)
+    }
+    return runAgent(adapterOf(cli), opts, { env, workDir, log, bin: binOf(cli) })
+  }
+  // What any of the CLIs creates in the checkout for itself: never part of a change.
+  agent.scratch = [...new Set(Object.values(AGENTS).flatMap((a) => a.scratch || []))]
 
   // Shell lines from the config (stack.setup, stack.check) run code from the checkout, which
   // the agent may have written: they get the agent's environment, without any token.
@@ -242,9 +264,9 @@ export function makeIo({ env = process.env, cwd = process.cwd(), log = (line) =>
       exists: (path) => existsSync(path),
       mkdtemp: (prefix) => mkdtempSync(join(tmp, prefix)),
     },
-    claude,
-    // "" when the agent may run on this machine, otherwise why not (cli/io/machine.mjs).
-    machineProblem: () => machineProblem({ env, gh, config, run, bin }),
+    agent,
+    // "" when the agent CLI `cli` may run on this machine, otherwise why not (cli/io/machine.mjs).
+    machineProblem: (cli = "claude") => machineProblem({ env, gh, config, run, bin: binOf(cli), cli }),
     ledger: makeLedger({ git: git(), url, log, label: `${env.GITHUB_WORKFLOW || "pipeline"} run ${env.GITHUB_RUN_ID || "0"}` }),
     // A random word for the delimiters around untrusted text in a prompt.
     nonce: () => randomBytes(6).toString("hex"),

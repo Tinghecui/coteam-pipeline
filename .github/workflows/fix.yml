@@ -54,6 +54,10 @@ on:
         description: "The exact version of the Claude Code CLI (@anthropic-ai/claude-code) to install on GitHub's machines. Pinned: the engine is tested against this one. A self-hosted runner uses its own CLI (at least the engine's MIN_CLAUDE, cli/io/machine.mjs)."
         type: string
         default: "2.1.302"
+      codex_version:
+        description: "The exact version of the Codex CLI (@openai/codex) to install on GitHub's machines when agents.executor or agents.reviewer is codex. A self-hosted runner uses its own CLI (at least the engine's MIN_CODEX, cli/io/machine.mjs)."
+        type: string
+        default: "0.170.0"
       agent_runs_on:
         description: "Where the agent's job runs (repository variable PIPELINE_AGENT_RUNS_ON): empty for GitHub's machines (ubuntu-latest), one runner label (self-hosted), or a JSON list of labels ([\"self-hosted\", \"pipeline\"]). Only the agent's job moves; the two jobs that hold the bot's key always run on GitHub's machines."
         type: string
@@ -84,6 +88,9 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: "A Claude subscription token (claude setup-token). Given to the agent's job only. Used when there is no ANTHROPIC_API_KEY."
         required: false
+      OPENAI_API_KEY:
+        description: "The team's own OpenAI API key, for the Codex CLI (agents.executor or agents.reviewer: codex). Given to the agent's job only, and there only to Codex. Optional on a self-hosted runner whose Codex is logged in."
+        required: false
 
 # The workflow's own token may read the repository's contents, nothing else. Pushing and
 # opening the pull request are done by the engine with the bot token, so that the pull
@@ -100,6 +107,8 @@ jobs:
       go: ${{ steps.prepare.outputs.go }}
       order_sha256: ${{ steps.prepare.outputs.order_sha256 }}
       engine_sha: ${{ steps.prepare.outputs.engine_sha }}
+      # claude | codex: the agent CLI the config names for this role.
+      agent_cli: ${{ steps.prepare.outputs.agent_cli }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -179,10 +188,15 @@ jobs:
       - name: Install the Claude Code CLI
         # On GitHub's machines only. A self-hosted runner keeps its own CLI and its login;
         # the engine checks its version before the agent starts.
-        if: runner.environment == 'github-hosted'
+        if: runner.environment == 'github-hosted' && needs.prepare.outputs.agent_cli != 'codex'
         env:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
         run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+      - name: Install the Codex CLI
+        if: runner.environment == 'github-hosted' && needs.prepare.outputs.agent_cli == 'codex'
+        env:
+          CODEX_VERSION: ${{ inputs.codex_version }}
+        run: npm install --global --no-audit --no-fund "@openai/codex@$CODEX_VERSION"
       - name: Take the work order
         uses: actions/download-artifact@v4
         with:
@@ -196,6 +210,8 @@ jobs:
           PIPELINE_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Each CLI is given only its own credential (cli/io/agent.mjs).
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Where this job runs and whether the repository is private: a self-hosted runner
           # for a public repository is refused (cli/io/machine.mjs).
           PIPELINE_RUNNER_ENVIRONMENT: ${{ runner.environment }}

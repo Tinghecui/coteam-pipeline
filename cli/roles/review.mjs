@@ -92,6 +92,7 @@ function writer(io, o) {
       io.ledger.append({
         at: io.now().toISOString(),
         role: "reviewer",
+        agent: config.agents.reviewer,
         issue: o.issue || null,
         row: o.row,
         pr: number,
@@ -233,6 +234,7 @@ export function prepare(opts, io) {
   const order = {
     v: 1,
     role: "review",
+    cli: config.agents.reviewer,
     pr: number,
     sha,
     issue: issueOfBranch(ref, config.branch_prefix),
@@ -338,7 +340,8 @@ export function prepare(opts, io) {
 // The merge commit is fetched by its id, so this is the very code `prepare` measured.
 export async function agent(order, io) {
   const config = io.config
-  const refused = io.machineProblem ? io.machineProblem() : ""
+  const cli = order.cli || config.agents.reviewer
+  const refused = io.machineProblem ? io.machineProblem(cli) : ""
   if (refused) {
     io.log(`refused: ${refused}`)
     return { v: 1, order: orderId(order), rc: null, output: null, usage: { turns: 0, usd: 0, models: [], unavailable: "runner" } }
@@ -356,7 +359,8 @@ export async function agent(order, io) {
     }
     let res
     try {
-      res = await io.claude({
+      res = await io.agent({
+        cli,
         tag: "reviewer",
         prompt: order.prompt,
         cwd: dir,

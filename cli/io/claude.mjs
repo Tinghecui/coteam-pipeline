@@ -1,41 +1,17 @@
-// The agent CLI: `claude -p --output-format stream-json`, run in its own session with a time
-// limit. Whatever it left running (a dev server, a watcher) is killed when it ends.
-//
-// The agent gets the model credential and an ordinary shell environment, nothing else: no
-// code-host token, no CI runtime token, no pipeline variable. Pushing, commenting and opening
-// pull requests are done by the role after the agent has exited.
-import { spawn, spawnSync } from "node:child_process"
-import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+// The Claude Code adapter (cli/io/agent.mjs runs it): `claude -p --output-format stream-json`.
 import { unavailableReason } from "../core/ledger.mjs"
+import { agentEnv as baseAgentEnv, parseLines, runAgent } from "./agent.mjs"
 
 // ---------- environment ----------
 
-// Removed whatever they hold: the code host's and the CI runner's own variables (tokens, and
-// files such as the step summary that a test runner would happily write into), and ours.
-const STRIP_PREFIX = /^(GITHUB_|ACTIONS_|GH_|PIPELINE_)/
-// Anything else that is named like a secret goes too: a workflow may carry a registry token
-// or a deploy key the agent has no business reading.
-const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|_KEY|_PAT)$/i
 // The model credential and the CLI's own settings stay.
 const MODEL_ENV = /^(ANTHROPIC_|CLAUDE_)/
 // No self-update in the middle of a run; long builds and test suites must not be cut off by
 // the CLI's default command timeout.
 const FIXED_ENV = { DISABLE_AUTOUPDATER: "1", BASH_DEFAULT_TIMEOUT_MS: "1800000", BASH_MAX_TIMEOUT_MS: "2700000" }
 
-// The environment the agent (and anything that runs code the agent wrote) is given.
-export function agentEnv(env, extra = FIXED_ENV) {
-  const out = {}
-  for (const [k, v] of Object.entries(env || {})) {
-    // A secret the workflow passes but the repository does not have arrives as "": the CLI
-    // must not take an empty API key for the credential it should use.
-    if (v === undefined || v === null || (MODEL_ENV.test(k) && v === "")) continue
-    if (STRIP_PREFIX.test(k)) continue
-    if (SECRET_NAME.test(k) && !MODEL_ENV.test(k)) continue
-    out[k] = String(v)
-  }
-  return { ...out, ...extra }
-}
+// The environment Claude Code is given (cli/io/agent.mjs agentEnv, with its variables).
+export const agentEnv = (env, extra = FIXED_ENV) => baseAgentEnv(env, extra, MODEL_ENV)
 
 // The CLI binary, and whether the environment carries a credential for it (for `doctor`).
 export const BIN = "claude"
@@ -81,19 +57,7 @@ export function claudeArgs({ model = "", schema = null, tools, maxTurns = null }
 // ---------- result ----------
 
 // stream-json text -> messages. Lines that are not JSON (a stray warning) are skipped.
-export function parseStream(text) {
-  return String(text || "")
-    .split("\n")
-    .filter((l) => l.trim())
-    .flatMap((l) => {
-      try {
-        const m = JSON.parse(l)
-        return m && typeof m === "object" ? [m] : []
-      } catch {
-        return []
-      }
-    })
-}
+export const parseStream = parseLines
 
 const filled = (o) => (o && typeof o === "object" && !Array.isArray(o) && Object.keys(o).length ? o : null)
 
@@ -140,101 +104,18 @@ export function claudeResult(msgs, { rc = 0, stderr = "", maxTurns = null } = {}
   return { ok, output: structuredOutput(msgs), usage, note }
 }
 
-// ---------- run ----------
+// ---------- the adapter ----------
 
-const killGroup = (pid, signal) => {
-  try {
-    process.kill(-pid, signal)
-  } catch {
-    // already gone
-  }
+export const CLAUDE = {
+  name: "claude",
+  bin: BIN,
+  keepEnv: MODEL_ENV,
+  fixedEnv: FIXED_ENV,
+  scratch: SCRATCH_PATHS,
+  hasCredential: hasModelCredential,
+  args: (o) => claudeArgs(o),
+  result: (raw, { rc, stderr, maxTurns }) => claudeResult(parseStream(raw), { rc, stderr, maxTurns }),
 }
 
-// Kill everything the agent started: its process group, and (where `pkill` exists) every
-// process of its session, which also catches children that moved to a group of their own.
-function killLeftovers(pid) {
-  killGroup(pid, "SIGKILL")
-  try {
-    spawnSync("pkill", ["-KILL", "-s", String(pid)], { stdio: "ignore", timeout: 5000 })
-  } catch {
-    // no pkill here: the group kill above has to do
-  }
-}
-
-// opts: { tag, prompt, cwd, model, minutes, schema, tools: "all"|"readonly", maxTurns }
-// deps: { env, workDir, bin, log, graceMs } — bound once by makeIo; tests pass their own.
-//   env: the caller's environment (filtered here, see agentEnv); workDir: where the transcript
-//   goes (outside the checkout); bin: the CLI binary; graceMs: time between asking it to stop
-//   and killing it once the time limit is reached.
-// Returns a Promise of { ok, output, usage, rc, rawPath, errPath, note }. It never rejects for
-// something the CLI did: a CLI that cannot even be started comes back as usage.unavailable.
-export function runClaude(opts, deps = {}) {
-  const { tag = "agent", prompt, cwd, model = "", minutes, schema = null, tools, maxTurns = null } = opts || {}
-  const { env = process.env, workDir, bin = BIN, log = () => {}, graceMs = 30000 } = deps
-  if (typeof prompt !== "string" || !prompt.trim()) throw new Error("runClaude: the prompt is empty")
-  if (!(Number(minutes) > 0)) throw new Error("runClaude: minutes must be > 0")
-  if (!workDir) throw new Error("runClaude: no workDir for the transcript")
-  if (!/^[a-z0-9][a-z0-9_-]*$/i.test(tag)) throw new Error(`runClaude: bad tag ${JSON.stringify(tag)}`)
-  const args = claudeArgs({ model, schema, tools, maxTurns })
-  mkdirSync(workDir, { recursive: true })
-  const rawPath = join(workDir, `${tag}.jsonl`)
-  const errPath = join(workDir, `${tag}.err`)
-
-  return new Promise((resolve) => {
-    const out = openSync(rawPath, "w")
-    const err = openSync(errPath, "w")
-    let timedOut = false
-    let settled = false
-    let stopTimer = null
-    let killTimer = null
-
-    const finish = (rc, startError = "") => {
-      if (settled) return
-      settled = true
-      clearTimeout(stopTimer)
-      clearTimeout(killTimer)
-      closeSync(out)
-      closeSync(err)
-      if (startError) writeFileSync(errPath, `${startError}\n`, { flag: "a" })
-      let stderr = ""
-      let raw = ""
-      try {
-        raw = readFileSync(rawPath, "utf8")
-        stderr = readFileSync(errPath, "utf8")
-      } catch {
-        // an unreadable transcript is the same as an empty one
-      }
-      const res = claudeResult(parseStream(raw), { rc, stderr, maxTurns })
-      log(`${tag}: ${res.note}`)
-      const tail = stderr.trim().split("\n").slice(-20).join("\n")
-      if (tail) log(`${tag} stderr (end):\n${tail}`)
-      resolve({ ok: res.ok, output: res.output, usage: res.usage, rc, rawPath, errPath, note: res.note })
-    }
-
-    let child
-    try {
-      // detached = its own session and process group, so the whole tree can be killed at once
-      child = spawn(bin, args, { cwd, env: agentEnv(env), detached: true, stdio: ["pipe", out, err] })
-    } catch (e) {
-      finish(127, `could not start ${bin}: ${e.message}`)
-      return
-    }
-    child.on("error", (e) => finish(127, `could not start ${bin}: ${e.message}`))
-    child.stdin.on("error", () => {})
-    child.stdin.end(prompt)
-    stopTimer = setTimeout(
-      () => {
-        timedOut = true
-        killGroup(child.pid, "SIGTERM")
-        killTimer = setTimeout(() => killGroup(child.pid, "SIGKILL"), graceMs)
-      },
-      Math.round(Number(minutes) * 60000),
-    )
-    // "exit", not "close": output goes to files, and a leftover background process holding
-    // them open must not keep us waiting.
-    child.on("exit", (code, signal) => {
-      killLeftovers(child.pid)
-      finish(timedOut ? 124 : (code ?? (signal === "SIGKILL" ? 137 : 143)))
-    })
-  })
-}
+// opts and deps: cli/io/agent.mjs runAgent.
+export const runClaude = (opts, deps) => runAgent(CLAUDE, opts, deps)

@@ -28,9 +28,9 @@ permissions:
 
 jobs:
   pipeline:
-    uses: Tinghecui/coteam-pipeline/.github/workflows/review.yml@v0.3.0
+    uses: Tinghecui/coteam-pipeline/.github/workflows/review.yml@v0.4.0
     with:
-      engine_ref: v0.3.0
+      engine_ref: v0.4.0
       app_id: ${{ vars.PIPELINE_APP_ID }}
       # Optional: see the note on PIPELINE_BOT in pipeline-tick.yml.
       bot_login: ${{ vars.PIPELINE_BOT }}
@@ -44,3 +44,5 @@ jobs:
       # One of the two (or neither, on a self-hosted runner whose CLI is logged in).
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # For the Codex CLI (agents: codex in .coteam/pipeline.yml).
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

@@ -92,7 +92,8 @@ export const T = {
     notVerifiedNone: "nothing reported.",
     notWritten: "(the executor did not say)",
     notGiven: "(not given)",
-    byline: ({ model, turns, usd }) => `Written by the pipeline executor (${model || "model unknown"}, ${turns ?? "?"} turns, about $${Number(usd || 0).toFixed(2)}).`,
+    // A CLI that reports no cost records 0: "cost not reported", not "$0.00".
+    byline: ({ model, turns, usd }) => `Written by the pipeline executor (${model || "model unknown"}, ${turns ?? "?"} turns, ${Number(usd) > 0 ? `about $${Number(usd).toFixed(2)}` : "cost not reported"}).`,
     draft: " Draft: a person has to look at it and mark it ready.",
     attempt: (n) => `Rework ${n}: changed again after review or CI feedback. This description was rewritten for the whole PR.`,
     detailsTitle: "Technical details (for the reviewer: files changed, evidence)",
@@ -366,7 +367,7 @@ export const REVIEW_TEXT = {
     reviewed: (head, base, baseSha) => `Reviewed: commit \`${head}\` merged into ${base}${baseSha ? ` \`${baseSha}\`` : ""}`,
     notReviewed: (head) => `Commit \`${head}\``,
     model: (model) => `model ${model}`,
-    cost: (turns, usd) => `${turns} turns, about ${usd}`,
+    cost: (turns, cost) => `${turns} turns, ${cost}`,
     run: (url) => `[run](${url})`,
     again: "A new commit on this PR is reviewed again.",
   },

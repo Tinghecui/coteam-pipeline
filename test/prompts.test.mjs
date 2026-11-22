@@ -235,7 +235,7 @@ test("PR body, single task: Fixes #N, no copied brief; missing fields are said t
   assert.doesNotMatch(plainOf(body), /\n---\n/)
   // without the real file list, the executor's own list is used
   assert.match(body, /- `desktop\/sync\.js`: reads the flag\n/)
-  assert.match(body, /> Written by the pipeline executor \(m, \? turns, about \$0\.00\)\. Draft: a person has to look at it and mark it ready\.\n> Rework 2: /)
+  assert.match(body, /> Written by the pipeline executor \(m, \? turns, cost not reported\)\. Draft: a person has to look at it and mark it ready\.\n> Rework 2: /)
   assert.doesNotMatch(body, /\nRun: /)
   // an output with holes does not crash and does not pretend
   const empty = prBody({}, { issue: 3 })

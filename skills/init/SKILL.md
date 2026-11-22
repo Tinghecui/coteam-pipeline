@@ -182,6 +182,10 @@ Two other ways, if the person asks or has no API key (offer them, do not push th
   the result with `gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo OWNER/REPO` instead. Tell
   them that an API key, if one is also set, is used first, that the subscription's terms
   are theirs to check, and that `limits.daily_runs` caps the runs a day.
+- **Codex as the reviewer (or the executor)**: if they have an OpenAI API key and want a
+  second model to review, add `agents: { reviewer: codex }` to the config and give them
+  `gh secret set OPENAI_API_KEY --repo OWNER/REPO`. Tell them Codex reports no cost, so
+  set `limits.daily_runs` as its brake.
 - **A machine of their own for the agent's job**: point them to "Run the agent on your
   own machine" in `docs/install.md`. They register the runner and run
   `doctor --runner --try` on it themselves; you do not log in to their machine. Say that

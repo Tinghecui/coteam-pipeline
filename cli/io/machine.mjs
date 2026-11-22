@@ -11,14 +11,18 @@
 // A refusal is reported as the agent being unavailable ("runner"): nothing is charged to the
 // issue, and the tick waits a while before it tries again (core/ledger.mjs claudeCooldown).
 
-// The oldest Claude Code CLI the engine works with. The workflows install a newer, pinned one.
+// The oldest version of each agent CLI the engine works with. The workflows install newer, pinned ones.
 export const MIN_CLAUDE = "2.1.0"
+export const MIN_CODEX = "0.162.0"
+export const MIN_VERSION = { claude: MIN_CLAUDE, codex: MIN_CODEX }
+const PRODUCT = { claude: "Claude Code", codex: "the Codex CLI" }
 
 export const TEXT = {
   publicRepo: (repo) =>
     `${repo} is public and this job runs on a self-hosted runner. The agent runs the repository's code and stays on that machine; for a public repository that is refused. Run the agent's job on GitHub's machines (leave PIPELINE_AGENT_RUNS_ON empty), or, if you accept the risk, set self_hosted.allow_public: true in .coteam/pipeline.yml.`,
   visibility: (repo, why) => `could not tell whether ${repo} is public (${why}); a self-hosted runner is only used for a repository known to be private`,
-  noCli: (bin, why) => `the agent CLI "${bin}" cannot be started on this machine (${why}). Install Claude Code for the runner's user, put it on the runner's PATH, or name it in PIPELINE_CLAUDE_BIN (the runner's .env file).`,
+  noCli: (bin, why, cli = "claude") =>
+    `the agent CLI "${bin}" cannot be started on this machine (${why}). Install ${PRODUCT[cli] || cli} for the runner's user, put it on the runner's PATH, or name it in PIPELINE_${cli.toUpperCase()}_BIN (the runner's .env file).`,
   oldCli: (bin, got, min) => `the agent CLI "${bin}" is version ${got}; the engine needs ${min} or later`,
   noVersion: (bin, said) => `the agent CLI "${bin}" did not say which version it is (it said: ${said})`,
 }
@@ -43,7 +47,8 @@ export const isSelfHosted = (env) => String(env?.PIPELINE_RUNNER_ENVIRONMENT || 
 //   env: the job's environment (PIPELINE_RUNNER_ENVIRONMENT, PIPELINE_REPO_PRIVATE: set by the
 //   workflow); gh: io.gh (asked for the visibility when the workflow did not say); config: the
 //   loaded config; run: proc.run; bin: the agent CLI.
-export function machineProblem({ env, gh, config, run, bin = "claude" }) {
+//   cli: which agent CLI ("claude" | "codex"), for its minimum version.
+export function machineProblem({ env, gh, config, run, bin = "claude", cli = "claude" }) {
   if (isSelfHosted(env) && !config?.self_hosted?.allow_public) {
     // The workflow passes what the event says (github.event.repository.private); asking
     // GitHub needs the gh CLI, which a self-hosted machine may not have.
@@ -61,12 +66,13 @@ export function machineProblem({ env, gh, config, run, bin = "claude" }) {
   try {
     r = run(bin, ["--version"], { timeoutMs: 60000 })
   } catch (e) {
-    return TEXT.noCli(bin, firstLine(e))
+    return TEXT.noCli(bin, firstLine(e), cli)
   }
-  if (r.rc !== 0) return TEXT.noCli(bin, `exit ${r.rc}: ${String(r.stderr || "").trim().slice(-200)}`)
+  if (r.rc !== 0) return TEXT.noCli(bin, `exit ${r.rc}: ${String(r.stderr || "").trim().slice(-200)}`, cli)
   const v = versionOf(r.stdout)
   if (!v) return TEXT.noVersion(bin, String(r.stdout || "").trim().slice(0, 100))
-  if (!atLeast(v, MIN_CLAUDE)) return TEXT.oldCli(bin, v.join("."), MIN_CLAUDE)
+  const min = MIN_VERSION[cli] || MIN_CLAUDE
+  if (!atLeast(v, min)) return TEXT.oldCli(bin, v.join("."), min)
   return ""
 }
 
@@ -86,13 +92,14 @@ export const RUNNER_TEXT = {
   cli: { ok: (bin, v) => `the agent CLI "${bin}" is version ${v}` },
   login: {
     env: (names) => `this shell has ${names.join(" and ")}; a secret the workflow passes takes its place`,
-    file: (path) => `the agent CLI is logged in for this user (${path})`,
+    file: (path, bin = "claude") => `"${bin}" is logged in for this user (${path})`,
     keychain: "the agent CLI may keep its login in the macOS keychain, which cannot be read from here",
     keychainHint: "Run the doctor again with --try: it asks the CLI one tiny question.",
-    none: "the agent CLI is not logged in for this user, and no model credential is set",
+    none: (bin = "claude") => `"${bin}" is not logged in for this user, and no model credential is set`,
     noneHint: "Run `claude` once as the runner's user and log in, or give the workflow ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN as a secret.",
-    tried: "the agent CLI answered a test question",
-    failed: (why) => `the agent CLI did not answer a test question: ${why}`,
+    codexHint: "Run `codex login` once as the runner's user, or give the workflow OPENAI_API_KEY as a secret.",
+    tried: (bin = "claude") => `"${bin}" answered a test question`,
+    failed: (why, bin = "claude") => `"${bin}" did not answer a test question: ${why}`,
   },
   github: {
     env: (names) => `a GitHub token is in this user's environment: ${names.join(", ")}. The agent would see it.`,
@@ -115,7 +122,42 @@ export const RUNNER_TEXT = {
 
 const gitHubIn = (text) => /github\.com/i.test(String(text || ""))
 
-export function checkMachine({ env = {}, home = "", platform = "", uid = -1, run, exists, read, list }, { bin = "claude", tryAgent = false } = {}) {
+// How each CLI shows that it can be used: credential variables, the file its login is kept in,
+// and a one-question try (`--try`) and how to read its answer ("" = it answered).
+const lastJson = (text) => {
+  try {
+    return JSON.parse(String(text || "").trim().split("\n").pop() || "null")
+  } catch {
+    return null
+  }
+}
+const LOGIN = {
+  claude: {
+    env: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"],
+    file: (env, at) => `${String(env.CLAUDE_CONFIG_DIR || "").trim() || at(".claude")}/.credentials.json`,
+    tryArgs: ["-p", "--max-turns", "1", "--output-format", "json"],
+    tryProblem: (r) => {
+      const res = lastJson(r.stdout)
+      return r.rc === 0 && res && !res.is_error ? "" : String(res?.result || r.stderr || `exit ${r.rc}`)
+    },
+  },
+  codex: {
+    env: ["OPENAI_API_KEY", "CODEX_API_KEY"],
+    file: (env, at) => `${String(env.CODEX_HOME || "").trim() || at(".codex")}/auth.json`,
+    tryArgs: ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-"],
+    tryProblem: (r) => {
+      const events = String(r.stdout || "").split("\n").map((l) => lastJson(l)).filter(Boolean)
+      if (r.rc === 0 && events.some((e) => e.type === "turn.completed")) return ""
+      const failed = events.filter((e) => ["turn.failed", "error"].includes(e.type)).map((e) => e.error?.message || e.message).filter(Boolean)
+      return String(failed.at(-1) || r.stderr || `exit ${r.rc}`)
+    },
+  },
+}
+
+// clis: [{ cli: "claude" | "codex", bin }] — the agent CLIs to look at (main.mjs: --cli). `bin`
+// alone is the same as clis: [{ cli: "claude", bin }].
+export function checkMachine({ env = {}, home = "", platform = "", uid = -1, run, exists, read, list }, { bin = "claude", clis = null, tryAgent = false } = {}) {
+  clis = clis || [{ cli: "claude", bin }]
   const T = RUNNER_TEXT
   const results = []
   const add = (id, state, text, hint = "") => results.push({ id, state, text, hint })
@@ -128,31 +170,30 @@ export function checkMachine({ env = {}, home = "", platform = "", uid = -1, run
     }
   }
 
-  // ---- git and the agent CLI ----
+  // ---- git and the agent CLIs ----
   const g = safe(() => run("git", ["--version"], { timeoutMs: 30000 }), null)
   if (g && g.rc === 0) add("git", "ok", T.git.ok(String(g.stdout).trim().replace(/^git version /, "")))
   else add("git", "FAIL", T.git.missing, T.git.hint)
-  const cli = machineProblem({ env: {}, gh: null, config: null, run, bin })
-  if (cli) add("cli", "FAIL", cli)
-  else add("cli", "ok", T.cli.ok(bin, versionOf(safe(() => run(bin, ["--version"], { timeoutMs: 60000 }).stdout, "")).join(".")))
-
-  // ---- the agent CLI's login ----
-  const modelEnv = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"].filter((k) => String(env[k] || "").trim())
-  const credFile = `${String(env.CLAUDE_CONFIG_DIR || "").trim() || at(".claude")}/.credentials.json`
-  if (modelEnv.length) add("login", "info", T.login.env(modelEnv))
-  else if (exists(credFile)) add("login", "ok", T.login.file(credFile))
-  else if (platform === "darwin") add("login", "warn", T.login.keychain, T.login.keychainHint)
-  else add("login", "FAIL", T.login.none, T.login.noneHint)
-  if (tryAgent && !cli) {
-    const r = safe(() => run(bin, ["-p", "--max-turns", "1", "--output-format", "json"], { input: "Reply with the single word OK.", timeoutMs: 180000 }), { rc: 127, stdout: "", stderr: "could not be started" })
-    let res = null
-    try {
-      res = JSON.parse(String(r.stdout || "").trim().split("\n").pop() || "null")
-    } catch {
-      // not JSON: said below
+  for (const { cli, bin } of clis) {
+    // Claude Code's lines keep the ids they had when it was the only CLI.
+    const id = (x) => (cli === "claude" ? x : x.replace(/^(cli|login)/, `$1.${cli}`))
+    const problem = machineProblem({ env: {}, gh: null, config: null, run, bin, cli })
+    if (problem) add(id("cli"), "FAIL", problem)
+    else add(id("cli"), "ok", T.cli.ok(bin, versionOf(safe(() => run(bin, ["--version"], { timeoutMs: 60000 }).stdout, "")).join(".")))
+    const login = LOGIN[cli]
+    const names = login.env.filter((k) => String(env[k] || "").trim())
+    const file = login.file(env, at)
+    const hint = cli === "codex" ? T.login.codexHint : T.login.noneHint
+    if (names.length) add(id("login"), "info", T.login.env(names))
+    else if (exists(file)) add(id("login"), "ok", T.login.file(file, bin))
+    else if (cli === "claude" && platform === "darwin") add(id("login"), "warn", T.login.keychain, T.login.keychainHint)
+    else add(id("login"), "FAIL", T.login.none(bin), hint)
+    if (tryAgent && !problem) {
+      const r = safe(() => run(bin, login.tryArgs, { input: "Reply with the single word OK.", timeoutMs: 180000 }), { rc: 127, stdout: "", stderr: "could not be started" })
+      const why = login.tryProblem(r)
+      if (!why) add(id("login.try"), "ok", T.login.tried(bin))
+      else add(id("login.try"), "FAIL", T.login.failed(why.replace(/\s+/g, " ").trim().slice(0, 200), bin), hint)
     }
-    if (r.rc === 0 && res && !res.is_error) add("login.try", "ok", T.login.tried)
-    else add("login.try", "FAIL", T.login.failed(String(res?.result || r.stderr || `exit ${r.rc}`).replace(/\s+/g, " ").trim().slice(0, 200)), T.login.noneHint)
   }
 
   // ---- GitHub credentials the agent could pick up ----

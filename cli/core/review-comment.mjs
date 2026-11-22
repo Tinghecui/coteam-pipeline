@@ -67,7 +67,7 @@ function footer(meta, reviewed) {
   const F = TEXT.footer
   const parts = [reviewed ? F.reviewed(short(meta.sha), meta.base || "the base branch", short(meta.baseSha)) : F.notReviewed(short(meta.sha))]
   if (meta.model) parts.push(F.model(oneLine(meta.model, 80)))
-  if (meta.turns != null && Number.isFinite(Number(meta.usd))) parts.push(F.cost(meta.turns, money(meta.usd)))
+  if (meta.turns != null && Number.isFinite(Number(meta.usd))) parts.push(F.cost(meta.turns, Number(meta.usd) > 0 ? `about ${money(meta.usd)}` : "cost not reported"))
   if (meta.runUrl) parts.push(F.run(meta.runUrl))
   return `<sub>${parts.join("; ")}. ${F.again}</sub>`
 }

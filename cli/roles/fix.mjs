@@ -22,7 +22,7 @@
 //                                 `result` mark on the issue (plus a `rework` mark on the PR)
 import { ciRuns } from "../core/decide.mjs"
 import { cleanResult, orderId } from "../core/handoff.mjs"
-import { budget, claudeCooldown } from "../core/ledger.mjs"
+import { agentCooldown, budget } from "../core/ledger.mjs"
 import { activeClaims, believedReviews, branchFor, countSince, findMarks, isAfter, issueOfBranch, lastDecision, latestReview, mark, markAuthors, releaseClaim, reworkObsolete, rowOfBranch, takesIssue, trustedComments } from "../core/marks.mjs"
 import { forbiddenHits, pathLevel } from "../core/policy.mjs"
 import { BODY_CUT, buildExecutorPrompt, cut, prBody } from "../core/prompts.mjs"
@@ -203,7 +203,7 @@ function precheck(c) {
 
   const now = io.now()
   const entries = io.ledger.read()
-  const cool = claudeCooldown(entries, now)
+  const cool = agentCooldown(entries, now, config.agents.executor)
   // `cooling: false` = the wait is over but nothing has worked since: this run is the probe.
   if (cool?.cooling) return skip("cooldown", TEXT.cooldown(cool.reason, cool.until), { until: cool.until })
   const b = budget(entries, { issue: n, row: row ? row.n : null, limits: config.limits, now, since: countSince(comments, prComments) })
@@ -454,7 +454,7 @@ export function prepare(opts, io) {
     return stop(skipped(c, { why: "claimed", text: TEXT.claimed(first.run), permanent: false }))
   }
 
-  const order = { v: 1, role: "fix", run: c.run, runUrl: c.runUrl, issue: c.issueNo, row: c.row, pr: c.prNo, sha: c.sha, attempt: pre.attempt, claim }
+  const order = { v: 1, role: "fix", cli: c.config.agents.executor, run: c.run, runUrl: c.runUrl, issue: c.issueNo, row: c.row, pr: c.prNo, sha: c.sha, attempt: pre.attempt, claim }
   let res
   try {
     res = plan(c, pre, order)
@@ -483,7 +483,8 @@ export async function agent(order, io, { bundle }) {
 
   const work = async () => {
     // Before anything from the repository runs: may the agent run on this machine at all?
-    const refused = io.machineProblem ? io.machineProblem() : ""
+    const cli = order.cli || config.agents.executor
+    const refused = io.machineProblem ? io.machineProblem(cli) : ""
     if (refused) {
       io.log(`refused: ${refused}`)
       usage = { turns: 0, usd: 0, models: [], unavailable: "runner" }
@@ -525,7 +526,7 @@ export async function agent(order, io, { bundle }) {
     // (a rewritten remote or a credential helper would otherwise be used by our own git calls).
     const gitConfig = `${io.repoDir}/.git/config`
     const savedConfig = io.fs.exists(gitConfig) ? io.fs.read(gitConfig) : null
-    const res = await io.claude({ tag: "executor", prompt: order.prompt, cwd: io.repoDir, model: config.models.executor, minutes: config.limits.executor_minutes, schema, tools: "all", maxTurns: MAX_TURNS })
+    const res = await io.agent({ cli, tag: "executor", prompt: order.prompt, cwd: io.repoDir, model: config.models.executor, minutes: config.limits.executor_minutes, schema, tools: "all", maxTurns: MAX_TURNS })
     if (savedConfig !== null) io.fs.write(gitConfig, savedConfig)
     usage = res?.usage || null
     if (usage?.unavailable) return { outcome: "unavailable" }
@@ -539,7 +540,7 @@ export async function agent(order, io, { bundle }) {
     // it left uncommitted, is in the working tree, and the working tree is what gets staged.
     // An unfinished merge is dropped first (`merge --quit` keeps the files as the agent left
     // them); staging then clears the index's unmerged entries.
-    const scratch = (io.claude.scratch || []).map((p) => `:(exclude)${p}`)
+    const scratch = (io.agent.scratch || []).map((p) => `:(exclude)${p}`)
     const stage = () => {
       G(["add", "-A", "--", ".", ...scratch])
       return G(["write-tree"]).trim()
@@ -776,6 +777,7 @@ function finish(c, order, res) {
   const entry = {
     at: iso(io.now()),
     role: "executor",
+    agent: c.config.agents.executor,
     issue: c.issueNo,
     row: c.row || null,
     pr: res.pr || c.prNo || null,

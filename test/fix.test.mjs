@@ -130,7 +130,7 @@ function world(over = {}) {
       },
     },
     fs: { read: (p) => readFileSync(p, "utf8"), write: (p, t) => writeFileSync(p, t), exists: (p) => existsSync(p), mkdtemp: (prefix) => mkdtempSync(join(root, prefix)) },
-    claude: Object.assign(
+    agent: Object.assign(
       async (opts) => {
         w.prompts.push(opts)
         w.agent(opts.cwd)
@@ -214,7 +214,7 @@ test("happy path: branch, agent, checks, commit by the role, push, PR, ledger, c
   assert.match(w.created[0].body, /^Fixes #5\n/)
   assert.match(w.created[0].body, /`test\/list\.test\.js`/)
 
-  assert.deepEqual(w.entries, [{ at: AT, role: "executor", issue: 5, row: null, pr: 50, run: "77", outcome: "pr", turns: 20, usd: 1.5, model: "model-a" }])
+  assert.deepEqual(w.entries, [{ at: AT, role: "executor", agent: "claude", issue: 5, row: null, pr: 50, run: "77", outcome: "pr", turns: 20, usd: 1.5, model: "model-a" }])
   const claims = w.marks("claim", 5)
   assert.equal(claims.length, 1)
   assert.equal(claims[0].released, true)
@@ -529,7 +529,7 @@ test("agent unavailable: recorded for the cooldown, not blamed on the issue", as
   const res = await run({ issue: 5 }, w.io)
   assert.equal(res.outcome, "unavailable")
   assert.equal(res.ok, false)
-  assert.deepEqual(w.entries, [{ at: AT, role: "executor", issue: 5, row: null, pr: null, run: "77", outcome: "unavailable", turns: 0, usd: 0, model: "", unavailable: "quota", resets_at: "2026-11-15T17:00:00.000Z" }])
+  assert.deepEqual(w.entries, [{ at: AT, role: "executor", agent: "claude", issue: 5, row: null, pr: null, run: "77", outcome: "unavailable", turns: 0, usd: 0, model: "", unavailable: "quota", resets_at: "2026-11-15T17:00:00.000Z" }])
   assert.equal(w.marks("result", 5).length, 0)
   assert.equal(w.marks("claim", 5)[0].released, true)
   assert.deepEqual(w.remoteBranches(), ["main"])
@@ -746,7 +746,7 @@ test("the order carries what publish needs and no credential; the agent part lea
     assert.deepEqual(w.created, [])
     assert.equal(w.entries.length, 0)
   })
-  assert.deepEqual(Object.keys(order).sort(), ["attempt", "baseSha", "branch", "claim", "conflict", "issue", "pr", "prompt", "pull", "role", "row", "run", "runUrl", "sha", "shape", "spec", "v"])
+  assert.deepEqual(Object.keys(order).sort(), ["attempt", "baseSha", "branch", "claim", "cli", "conflict", "issue", "pr", "prompt", "pull", "role", "row", "run", "runUrl", "sha", "shape", "spec", "v"])
   assert.deepEqual([order.role, order.issue, order.pr, order.shape, order.branch], ["fix", 5, 0, "new", "pipeline/5-list-loses-its-last-entry"])
   assert.equal(order.prompt, w.prompts[0].prompt)
   assert.deepEqual(Object.keys(result).sort(), ["order", "outcome", "output", "usage", "v"])
@@ -858,7 +858,7 @@ test("text and numbers from the agent's machine are cleaned before they are writ
   // the only result mark on the issue is the pipeline's own
   assert.deepEqual(w.marks("result", 5).map((m) => [m.outcome, m.pr]), [["checks_failed", undefined]])
   assert.ok(w.posted.every((p) => !p.body.includes(forged)))
-  assert.deepEqual(w.entries, [{ at: AT, role: "executor", issue: 5, row: null, pr: null, run: "77", outcome: "checks_failed", turns: 0, usd: 0, model: "model-a" }])
+  assert.deepEqual(w.entries, [{ at: AT, role: "executor", agent: "claude", issue: 5, row: null, pr: null, run: "77", outcome: "checks_failed", turns: 0, usd: 0, model: "model-a" }])
 })
 
 test("a pull request head that moved between the jobs: publish pushes nothing and the tick is told to send it again", async () => {
@@ -886,4 +886,31 @@ test("a machine the agent may not run on: nothing from the repository runs, and 
   assert.deepEqual([w.entries[0].outcome, w.entries[0].unavailable, w.entries[0].usd], ["unavailable", "runner", 0])
   assert.equal(w.marks("claim", 5)[0].released, true)
   assert.deepEqual(w.remoteBranches(), ["main"])
+})
+
+test("Codex as the executor: the order and the agent part name it, its machine check is for it, the ledger line says so; Claude's outage does not hold it", async () => {
+  const w = world()
+  w.config.agents = { executor: "codex", reviewer: "claude" }
+  const asked = []
+  w.io.machineProblem = (cli) => {
+    asked.push(cli)
+    return ""
+  }
+  // Claude Code (the reviewer here) is out of quota: the executor goes ahead
+  w.entries.push({ at: new Date(Date.parse(AT) - 600000).toISOString(), role: "reviewer", pr: 9, turns: 0, usd: 0, outcome: "unavailable", unavailable: "quota" })
+  const res = await run({ issue: 5 }, w.io)
+  assert.equal(res.outcome, "pr")
+  assert.deepEqual(asked, ["codex"])
+  assert.equal(w.prompts[0].cli, "codex")
+  assert.equal(w.entries.at(-1).agent, "codex")
+})
+
+test("Codex as the executor, out of quota: the next run of it waits", async () => {
+  const w = world()
+  w.config.agents = { executor: "codex", reviewer: "claude" }
+  w.entries.push({ at: new Date(Date.parse(AT) - 600000).toISOString(), role: "executor", agent: "codex", issue: 9, turns: 0, usd: 0, outcome: "unavailable", unavailable: "quota" })
+  const res = await run({ issue: 5 }, w.io)
+  assert.equal(res.outcome, "skipped")
+  assert.equal(res.why, "cooldown")
+  assert.equal(w.prompts.length, 0)
 })

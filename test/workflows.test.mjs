@@ -88,10 +88,10 @@ test("the dispatcher never receives the model key", () => {
 test("the reusable workflows declare the secrets they use and nothing else", () => {
   for (const f of REUSABLE) {
     const used = [...new Set([...code(f.text).matchAll(/\$\{\{\s*secrets\.(\w+)\s*\}\}/g)].map((m) => m[1]))].sort()
-    assert.deepEqual(used, f.name === "tick" ? ["PIPELINE_APP_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "PIPELINE_APP_KEY"], f.path)
+    assert.deepEqual(used, f.name === "tick" ? ["PIPELINE_APP_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "PIPELINE_APP_KEY"], f.path)
     // The bot's key is required; a model credential is not (a self-hosted runner can use its own CLI's login).
     for (const s of used) assert.match(code(f.text), new RegExp(`^      ${s}:\\n(?:        description: .*\\n)?        required: ${s === "PIPELINE_APP_KEY"}$`, "m"), `${f.path} ${s}`)
-    if (f.name !== "tick") for (const s of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) for (const j of jobsOf(f.text)) assert.equal(code(j.text).includes(`secrets.${s}`), j.id === "agent", `${f.path} ${j.id} ${s}`)
+    if (f.name !== "tick") for (const s of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"]) for (const j of jobsOf(f.text)) assert.equal(code(j.text).includes(`secrets.${s}`), j.id === "agent", `${f.path} ${j.id} ${s}`)
     // The workflow's own token goes to one step only: the agent's, which fetches the code with it.
     assert.ok(!/GITHUB_TOKEN/.test(code(f.text)), f.path)
     assert.deepEqual(code(f.text).match(/.*github\.token.*/g) || [], f.name === "tick" ? [] : ["          PIPELINE_TOKEN: ${{ github.token }}"], f.path)
@@ -401,8 +401,8 @@ test("the starter config loads together with the preset it names, and explains e
     const m = /^\s*([a-z_0-9]+):/.exec(line)
     if (m) assert.match(lines[i - 1] || "", /^\s*#/, `templates/pipeline.yml: "${m[1]}" (line ${i + 1}) has no comment above it`)
   })
-  for (const key of ["version", "preset", "mode", "base", "owners", "stack", "setup", "test", "check", "ui_paths", "models", "risk", "forbidden", "level3", "level2", "level1", "merge", "method", "auto_max_level", "default_after_hours", "limits", "max_parallel", "max_rework", "issue_max_runs", "issue_max_usd", "daily_usd", "daily_runs", "executor_minutes", "reviewer_minutes", "labels", "work", "decide", "approved", "redo", "followup", "board", "self_hosted", "allow_public", "level_prefix", "status_context", "branch_prefix"])
-    assert.match(text, new RegExp(`^\\s*(# )?${key}:`, "m"), `templates/pipeline.yml does not mention ${key}`)
+  for (const key of ["version", "preset", "mode", "base", "owners", "stack", "setup", "test", "check", "ui_paths", "agents", "models", "review", "independent", "risk", "forbidden", "level3", "level2", "level1", "merge", "method", "auto_max_level", "default_after_hours", "limits", "max_parallel", "max_rework", "issue_max_runs", "issue_max_usd", "daily_usd", "daily_runs", "executor_minutes", "reviewer_minutes", "labels", "work", "decide", "approved", "redo", "followup", "board", "self_hosted", "allow_public", "level_prefix", "status_context", "branch_prefix"])
+    assert.match(text, new RegExp(`^\\s*(#\\s*)?${key}:`, "m"), `templates/pipeline.yml does not mention ${key}`)
 })
 
 test("docs/install.md names the same things as the workflows and the doctor", async () => {
@@ -433,7 +433,7 @@ test("npm test runs every test file", () => {
 test("the README is in English, says what has not been verified and how to install, and its links exist", () => {
   const readme = readFileSync(join(ROOT, "README.md"), "utf8")
   assert.ok(!/[㐀-鿿]/.test(readme), "written for outside readers")
-  assert.match(readme, /The current release is `v0\.3\.0`/)
+  assert.match(readme, /The current release is `v0\.4\.0`/)
   assert.match(readme, /What has not been verified: a codebase of real size/)
   assert.match(readme, /\/plugin install coteam-pipeline@coteam-pipeline\n\/coteam-pipeline:init/)
   const links = [...readme.matchAll(/\]\(([^)#]+)(?:#[^)]*)?\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l))
@@ -470,12 +470,17 @@ test("the documents agree with the code about PIPELINE_BOT and about the agent's
 test("a self-hosted agent's job: the pinned CLI is installed on GitHub's machines only, and the engine is told where it runs", () => {
   for (const f of REUSABLE.filter((x) => x.name !== "tick")) {
     const agent = code(job(f, "agent"))
-    assert.match(agent, /- name: Install the Claude Code CLI\n {8}if: runner\.environment == 'github-hosted'\n/, f.path)
+    // the CLI the prepare job names (agents.executor / agents.reviewer), and only that one
+    assert.match(agent, /- name: Install the Claude Code CLI\n {8}if: runner\.environment == 'github-hosted' && needs\.prepare\.outputs\.agent_cli != 'codex'\n/, f.path)
+    assert.match(agent, /- name: Install the Codex CLI\n {8}if: runner\.environment == 'github-hosted' && needs\.prepare\.outputs\.agent_cli == 'codex'\n/, f.path)
+    assert.match(code(job(f, "prepare")), /^ {6}agent_cli: \$\{\{ steps\.prepare\.outputs\.agent_cli \}\}$/m, f.path)
+    assert.match(code(f.text), /^ {6}codex_version:\n {8}description: .*\n {8}type: string\n {8}default: "\d+\.\d+\.\d+"$/m, f.path)
     assert.match(agent, /^ {10}PIPELINE_RUNNER_ENVIRONMENT: \$\{\{ runner\.environment \}\}$/m, f.path)
     assert.match(code(f.text), /^ {6}agent_runs_on:\n {8}description: .*\n {8}type: string\n {8}default: ""$/m, f.path)
   }
   for (const f of CALLER.filter((x) => x.reusable !== "tick")) {
     assert.match(code(f.text), /^ {6}agent_runs_on: \$\{\{ vars\.PIPELINE_AGENT_RUNS_ON \}\}$/m, f.path)
     assert.match(code(f.text), /^ {6}CLAUDE_CODE_OAUTH_TOKEN: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}$/m, f.path)
+    assert.match(code(f.text), /^ {6}OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}$/m, f.path)
   }
 })

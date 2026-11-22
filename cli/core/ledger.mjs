@@ -1,5 +1,6 @@
 // The ledger: `ledger.jsonl` on the `pipeline/ledger` branch, one JSON object per agent run:
-//   { at, role: "executor"|"reviewer", issue, row, pr, run, outcome, turns, usd, model, merged? }
+//   { at, role: "executor"|"reviewer", agent: "claude"|"codex", issue, row, pr, run, outcome, turns, usd, model, merged? }
+// (`agent` is missing on lines written before v0.4.0: those were all Claude Code.)
 // plus, when the agent CLI could not be used at all (outcome "unavailable"):
 //   { unavailable: <reason code>, resets_at?: <ISO time> }
 // Budgets and the cooldown are computed from it; nothing here reads or writes the file.
@@ -84,9 +85,10 @@ export function budget(entries, { issue, row = null, limits, now = new Date(), s
 }
 
 // ---------- the agent CLI cannot be used: out of quota / overloaded / logged out / never started ----------
-// Every role shares one credential, so when one run hits this they all wait: the run is
-// recorded with outcome "unavailable", is not charged to its issue, and the tick dispatches
-// nothing until the cooldown is over.
+// Every run of one CLI shares its credential, so when one run hits this, every role that uses
+// that CLI waits: the run is recorded with outcome "unavailable", is not charged to its issue,
+// and the tick dispatches nothing to that CLI until the cooldown is over. A role that uses
+// another CLI goes on.
 
 export const UNAVAILABLE_COOLDOWN_MS = 30 * 60000
 // A reset time is believed up to 8 days ahead (a weekly quota resets within 7); anything further is taken as garbage.
@@ -98,6 +100,13 @@ const UNAVAILABLE_ERRORS = [
   ["overloaded", /(?:api error|http(?: error)?|status(?: code)?)[\s:]+529\b|^529\b|\boverloaded\b|overloaded_error/i],
   ["auth", /authentication_error|invalid api key|not logged in|please (?:log|sign) in|please run \/login|(?:oauth |access |refresh )?token (?:has )?expired|refresh_token_reused|unauthorized/i],
 ]
+
+// The CLI's own error text -> { reason, detail } of the first kind it matches, or null.
+export function unavailableFromText(text) {
+  const t = String(text || "")
+  const hit = t && UNAVAILABLE_ERRORS.find(([, re]) => re.test(t))
+  return hit ? { reason: hit[0], detail: t.replace(/\s+/g, " ").trim().slice(0, 300) } : null
+}
 
 // Seconds, milliseconds or a date string -> ISO time, or null.
 const resetIso = (v) => {
@@ -133,15 +142,17 @@ export function unavailableReason(msgs, { rc = 0, stderr = "" } = {}) {
   return null
 }
 
-// Are we cooling down? Looks at the "unavailable" entries after the last run that really
-// worked (an agent role with turns > 0, whatever its outcome). The cooldown ends at the
+// Is one CLI cooling down? Looks at that CLI's "unavailable" entries after its last run that
+// really worked (an agent role with turns > 0, whatever its outcome). agent: "claude" | "codex"
+// (entries without `agent` are Claude Code's); null = every entry, whichever CLI. The cooldown ends at the
 // latest of: `resets_at` if it lies after the entry (capped at 8 days), else entry + 30 min.
 // None -> null. Otherwise { until, since, at, reason, role, cooling }.
 // `cooling: false` means the time is up but nothing has succeeded yet: the tick should send
 // a single probe run instead of the full batch, and one success clears the state.
-export function claudeCooldown(entries, now = new Date()) {
+export const agentOf = (e) => String(e?.agent || "claude")
+export function agentCooldown(entries, now = new Date(), agent = null) {
   const t = (e) => Date.parse(e.at)
-  const es = (entries || []).filter((e) => AGENT_ROLES.includes(e.role) && Number.isFinite(t(e)))
+  const es = (entries || []).filter((e) => AGENT_ROLES.includes(e.role) && Number.isFinite(t(e)) && (agent === null || agentOf(e) === agent))
   const okAt = Math.max(-Infinity, ...es.filter((e) => e.outcome !== "unavailable" && Number(e.turns) > 0).map(t))
   const un = es.filter((e) => e.outcome === "unavailable" && t(e) > okAt).sort((a, b) => t(a) - t(b))
   if (!un.length) return null
@@ -153,5 +164,7 @@ export function claudeCooldown(entries, now = new Date()) {
   )
   const last = un[un.length - 1]
   const iso = (x) => new Date(x).toISOString().replace(/\.000Z$/, "Z")
-  return { until: iso(until), since: un[0].at, at: last.at, reason: String(last.unavailable || "unavailable"), role: last.role, cooling: until > now.getTime() }
+  return { until: iso(until), since: un[0].at, at: last.at, reason: String(last.unavailable || "unavailable"), role: last.role, agent: agentOf(last), cooling: until > now.getTime() }
 }
+// Before v0.4.0 there was one CLI. Same as agentCooldown(entries, now, "claude").
+export const claudeCooldown = (entries, now = new Date()) => agentCooldown(entries, now, "claude")

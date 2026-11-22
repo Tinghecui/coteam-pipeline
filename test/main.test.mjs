@@ -596,7 +596,7 @@ test("makeIo: config comes from the base branch (with its preset), not from the 
   assert.equal(Object.getOwnPropertyDescriptor(io, "botLogin").value, undefined)
   assert.equal(typeof Object.getOwnPropertyDescriptor(io, "botLogin").get, "function")
   assert.equal(io.gh.repo, "o/r")
-  assert.deepEqual(io.claude.scratch, SCRATCH_PATHS)
+  assert.deepEqual(io.agent.scratch, SCRATCH_PATHS, "Codex creates nothing in the checkout; Claude Code its .claude")
   assert.deepEqual(io.ledger.read(), [])
   assert.equal(io.makeGit({ cwd: work }).git(["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main")
   // shell lines from the config do not see the tokens

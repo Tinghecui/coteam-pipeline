@@ -101,7 +101,7 @@ function fake({ pr = pull(), comments = [], issue = { number: 12, title: "Paging
     proc: { run: (cmd, args) => (calls.proc.push([cmd, ...args].join(" ")), { rc: 0, stdout: "", stderr: "" }) },
     fs: { read: (p) => readFileSync(p, "utf8"), mkdtemp: (prefix) => `/tmp/${prefix}x1` },
     nonce: () => "n0nce",
-    claude: async (opts) => {
+    agent: async (opts) => {
       calls.claude.push(opts)
       if (claude instanceof Error) throw claude
       return claude
@@ -151,7 +151,7 @@ test("approve at level 0: comment with the mark, success status, level label rep
     ["POST", "issues/7/labels", { labels: ["level:0"] }],
     ["DELETE", "issues/7/labels/level%3A1"],
   ])
-  assert.deepEqual(f.calls.ledger, [{ at: "2026-01-10T12:00:00.000Z", role: "reviewer", issue: 12, row: 0, pr: 7, sha: HEAD, run: "55", outcome: "approve", turns: 9, usd: 0.31, model: "m-review" }])
+  assert.deepEqual(f.calls.ledger, [{ at: "2026-01-10T12:00:00.000Z", role: "reviewer", agent: "claude", issue: 12, row: 0, pr: 7, sha: HEAD, run: "55", outcome: "approve", turns: 9, usd: 0.31, model: "m-review" }])
   // the checkout is removed
   assert.ok(f.calls.proc.includes("rm -rf /tmp/pipeline-review-x1"))
 })
@@ -418,7 +418,7 @@ test("the three parts: prepare measures the code, the agent part only reads and 
   const first = prepare({ pr: 7 }, f.io)
   assert.equal(first.go, true)
   const order = JSON.parse(JSON.stringify(first.order))
-  assert.deepEqual(Object.keys(order).sort(), ["baseSha", "byPath", "dry", "failedBefore", "have", "issue", "mergeSha", "paths", "pr", "prompt", "role", "row", "run", "runUrl", "sha", "v"])
+  assert.deepEqual(Object.keys(order).sort(), ["baseSha", "byPath", "cli", "dry", "failedBefore", "have", "issue", "mergeSha", "paths", "pr", "prompt", "role", "row", "run", "runUrl", "sha", "v"])
   assert.deepEqual([order.role, order.pr, order.sha, order.baseSha, order.mergeSha, order.byPath], ["review", 7, HEAD, BASE, MERGE, 0])
   // so far: the pending status, and the prepare job's directory removed again
   assert.deepEqual(f.calls.writes.map(([m, p]) => `${m} ${p}`), [`POST statuses/${HEAD}`])
@@ -484,4 +484,19 @@ test("a machine the agent may not run on: the reviewer is not started, and it is
   assert.equal(f.calls.claude.length, 0)
   assert.match(f.statuses().at(-1).description, /^Review did not run: the agent is unavailable \(runner: the agent's machine refused to run it/)
   assert.deepEqual([f.calls.ledger[0].outcome, f.calls.ledger[0].unavailable], ["unavailable", "runner"])
+})
+
+test("Codex as the reviewer: the agent part runs it, its machine check is for it, the ledger line says so", async () => {
+  const f = fake({ cfg: config({ agents: { executor: "claude", reviewer: "codex" }, models: { executor: "m-exec", reviewer: "" } }), claude: { ok: true, output: good(), usage: { turns: 7, usd: 0, models: ["codex"] }, rc: 0 } })
+  const asked = []
+  f.io.machineProblem = (cli) => {
+    asked.push(cli)
+    return ""
+  }
+  const r = await run({ pr: 7 }, f.io)
+  assert.equal(r.outcome, "reviewed")
+  assert.deepEqual(asked, ["codex"])
+  assert.equal(f.calls.claude[0].cli, "codex")
+  assert.equal(f.calls.claude[0].tools, "readonly")
+  assert.deepEqual([f.calls.ledger[0].agent, f.calls.ledger[0].model, f.calls.ledger[0].usd], ["codex", "codex", 0])
 })

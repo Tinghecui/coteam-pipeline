@@ -1,6 +1,6 @@
 {
   "name": "coteam-pipeline",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Install coteam-pipeline in a repository: an issue-to-merge pipeline run by coding agents in your own GitHub Actions, with your own keys.",
   "author": { "name": "CoTeam" },
   "homepage": "https://github.com/Tinghecui/coteam-pipeline",

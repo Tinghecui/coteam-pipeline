@@ -11,8 +11,9 @@
 //   spec check <file | - | issue number>        check a spec issue's format (a file or stdin needs no token)
 //   doctor [--fix]                              check the installation of this repository on GitHub (it only reads;
 //                                               --fix creates the labels that are missing)
-//   doctor --runner [--try]                     check this machine for running the agent's job (a self-hosted
-//                                               runner), as the runner's user; --try asks the agent CLI one question
+//   doctor --runner [--cli claude,codex] [--try]
+//                                               check this machine for running the agent's job (a self-hosted
+//                                               runner), as the runner's user; --try asks each agent CLI one question
 //   app-token <app-id> <owner/repo> [--login]   PEM on stdin -> an installation token on stdout
 //                                               (--login: and on a second line the app's login, "<slug>[bot]")
 //   init <scan | files | check | app>           the installer's steps, run on a person's machine by the
@@ -37,7 +38,8 @@ import { checkSpec } from "./core/spec.mjs"
 import { appLogin, mintAppToken } from "./io/app-token.mjs"
 import { checkMachine, RUNNER_TEXT } from "./io/machine.mjs"
 import { run as runProc } from "./io/proc.mjs"
-import { HOME, makeIo } from "./io/real.mjs"
+import { AGENT_NAMES, AGENTS } from "./io/agents.mjs"
+import { agentBin, HOME, makeIo } from "./io/real.mjs"
 import * as doctorRole from "./roles/doctor.mjs"
 import * as fixRole from "./roles/fix.mjs"
 import * as initRole from "./roles/init.mjs"
@@ -56,7 +58,7 @@ export const TEXT = {
     "  tick [--dry]",
     "  status [--repo owner/name] [--json]",
     "  spec check <file | - | issue number>",
-    "  doctor [--fix] | doctor --runner [--try]",
+    "  doctor [--fix] | doctor --runner [--cli claude,codex] [--try]",
     "  app-token <app-id> <owner/repo> [--login]   (PEM on stdin)",
     "  init <scan | files | check | app>           (the installer's steps; `init` alone lists them)",
   ].join("\n"),
@@ -68,6 +70,7 @@ export const TEXT = {
   notOrder: (name) => `the work order is not one for "${name}"`,
   noRepo: "status: say which repository (--repo owner/name), or run it in a checkout whose origin is on GitHub",
   noToken: "status: no token (set PIPELINE_TOKEN or GH_TOKEN, or log in with `gh auth login`)",
+  unknownCli: (names, known) => `doctor --runner: no agent CLI called ${names.join(", ")} (known: ${known.join(", ")})`,
   specOk: "The spec has no problems.",
   specProblems: (n) => `The spec has ${n} problem${n === 1 ? "" : "s"}:`,
   specUsage: "usage: main.mjs spec check <file | - | issue number>",
@@ -188,7 +191,9 @@ async function rolePart(name, part, opts, flags, { env, cwd, out }) {
     // a branch or tag that moves in the middle of a run cannot give them another engine.
     const head = runProc("git", ["-C", HOME, "rev-parse", "HEAD"]).stdout.trim()
     const engine = /^[0-9a-f]{40,64}$/.test(head) ? head : ""
-    if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `go=${first.go ? "true" : "false"}\norder_sha256=${sealed?.sha256 || ""}\nengine_sha=${engine}\n`)
+    // agent_cli: which CLI the agent's job installs (on GitHub's machines) and runs.
+    const cli = AGENT_NAMES.includes(first.order?.cli) ? first.order.cli : ""
+    if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `go=${first.go ? "true" : "false"}\norder_sha256=${sealed?.sha256 || ""}\nengine_sha=${engine}\nagent_cli=${cli}\n`)
     return first.go ? done({ ok: true, go: true, order_sha256: sealed.sha256 }) : done(first.result)
   }
   if (part === "agent") {
@@ -240,10 +245,14 @@ async function status(flags, { env, cwd, out }) {
 // The installation check (cli/roles/doctor.mjs). It needs the repository's name and a token
 // like every role, but not a working config: a config that is missing or does not load is
 // one of the things it reports. Its lines are the output; no JSON summary is printed.
-async function doctor({ fix, runner, tryAgent }, { env, cwd, out }) {
+async function doctor({ fix, runner, tryAgent, cli = "" }, { env, cwd, out }) {
   if (runner) {
     const deps = { env, home: homedir(), platform: process.platform, uid: typeof process.getuid === "function" ? process.getuid() : -1, run: runProc, exists: existsSync, read: (p) => readFileSync(p, "utf8"), list: (d) => readdirSync(d) }
-    const res = checkMachine(deps, { bin: String(env.PIPELINE_CLAUDE_BIN || "").trim() || "claude", tryAgent })
+    // --cli claude,codex: the CLIs this machine is to run (default: claude).
+    const names = String(cli || "claude").split(",").map((x) => x.trim()).filter(Boolean)
+    const unknown = names.filter((n) => !AGENT_NAMES.includes(n))
+    if (unknown.length) throw new Error(TEXT.unknownCli(unknown, AGENT_NAMES))
+    const res = checkMachine(deps, { clis: names.map((n) => ({ cli: n, bin: agentBin(env, AGENTS[n]) })), tryAgent })
     out(RUNNER_TEXT.title)
     for (const r of res.results) {
       out(`${r.state.padEnd(4)}  ${r.text}`)
@@ -378,7 +387,7 @@ export async function main(argv, ctx = {}) {
         if (rest[0] !== "check") throw new Error(TEXT.specUsage)
         return await specCheck(rest[1], io)
       case "doctor":
-        return await doctor({ fix: bool(flags, "fix"), runner: bool(flags, "runner"), tryAgent: bool(flags, "try") }, io)
+        return await doctor({ fix: bool(flags, "fix"), runner: bool(flags, "runner"), tryAgent: bool(flags, "try"), cli: typeof flags.cli === "string" ? flags.cli : "" }, io)
       case "app-token":
         return await appToken(rest, io, { login: bool(flags, "login") })
       case "init":

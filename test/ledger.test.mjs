@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { DEFAULTS } from "../cli/core/config.mjs"
-import { budget, claudeCooldown, countedRuns, NOT_AN_ATTEMPT, parseLedger, unavailableReason, UNAVAILABLE_COOLDOWN_MS } from "../cli/core/ledger.mjs"
+import { NOT_AN_ATTEMPT, UNAVAILABLE_COOLDOWN_MS, agentCooldown, budget, claudeCooldown, countedRuns, parseLedger, unavailableFromText, unavailableReason } from "../cli/core/ledger.mjs"
 
 const now = new Date("2026-11-15T12:00:00Z")
 const limits = { ...DEFAULTS.limits, daily_usd: 15, issue_max_runs: 5, issue_max_usd: 20 }
@@ -140,7 +140,7 @@ test("cooldown: 30 minutes after the latest unavailable run, or until its reset 
   assert.equal(claudeCooldown([], t0), null)
   assert.equal(claudeCooldown(null, t0), null)
   assert.equal(claudeCooldown([{ at: at(-5), role: "executor", issue: 5, turns: 30, outcome: "fail" }], t0), null)
-  assert.deepEqual(claudeCooldown([un(-10)], t0), { until: at(20), since: at(-10), at: at(-10), reason: "quota", role: "executor", cooling: true })
+  assert.deepEqual(claudeCooldown([un(-10)], t0), { until: at(20), since: at(-10), at: at(-10), reason: "quota", role: "executor", agent: "claude", cooling: true })
   assert.equal(claudeCooldown([un(-10, { resets_at: at(120) })], t0).until, at(120))
   // a reset time already in the past: 30 minutes; absurdly far (more than 8 days): cut to 8 days
   assert.equal(claudeCooldown([un(-10, { resets_at: at(-60) })], t0).until, at(20))
@@ -157,6 +157,32 @@ test("cooldown: 30 minutes after the latest unavailable run, or until its reset 
   const two = claudeCooldown([un(-25, { resets_at: at(60) }), un(-10, { role: "reviewer", unavailable: "overloaded" })], t0)
   assert.deepEqual([two.until, two.reason, two.since, two.role], [at(60), "overloaded", at(-25), "reviewer"])
   assert.equal(claudeCooldown([un(-10, { unavailable: undefined })], t0).reason, "unavailable")
+})
+
+test("cooldown per CLI: one CLI out of quota does not hold the other; lines without `agent` are Claude Code's", () => {
+  const t0 = new Date("2026-11-16T04:00:00Z")
+  const un = (o = {}) => ({ at: "2026-11-16T03:50:00Z", role: "reviewer", pr: 3, turns: 0, usd: 0, outcome: "unavailable", unavailable: "quota", ...o })
+  const codexOut = [un({ agent: "codex" })]
+  assert.equal(agentCooldown(codexOut, t0, "codex").cooling, true)
+  assert.equal(agentCooldown(codexOut, t0, "codex").agent, "codex")
+  assert.equal(agentCooldown(codexOut, t0, "claude"), null)
+  assert.equal(claudeCooldown(codexOut, t0), null)
+  // an old line, written before there was a second CLI
+  assert.equal(agentCooldown([un()], t0, "claude").cooling, true)
+  assert.equal(agentCooldown([un()], t0, "codex"), null)
+  // a Claude run that worked does not clear Codex's cooldown
+  assert.equal(agentCooldown([...codexOut, { at: "2026-11-16T03:55:00Z", role: "executor", issue: 1, turns: 9, outcome: "pr" }], t0, "codex").cooling, true)
+  // null: any CLI
+  assert.equal(agentCooldown(codexOut, t0, null).cooling, true)
+})
+
+test("unavailableFromText: the CLI's error text -> the kind of outage", () => {
+  assert.equal(unavailableFromText("You’ve hit your usage limit. Upgrade to Pro").reason, "quota")
+  assert.equal(unavailableFromText("Not logged in").reason, "auth")
+  assert.equal(unavailableFromText("unexpected status 401 Unauthorized").reason, "auth")
+  assert.equal(unavailableFromText("the model is overloaded").reason, "overloaded")
+  assert.equal(unavailableFromText("TypeError: x is not a function"), null)
+  assert.equal(unavailableFromText(""), null)
 })
 
 test("budget: a run that refused to start (skipped, dry) never counts against the issue, should a ledger line for it ever be written", () => {

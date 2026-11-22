@@ -232,6 +232,30 @@ test("today's spend at the daily limit: no executor and no review is dispatched"
   assert.deepEqual(fixes(plan({ issues: [issue(1)], ledger: [{ at: ago(60 * 30), role: "reviewer", pr: 9, usd: 31, turns: 5, outcome: "approve" }] })), [[1, 0]])
 })
 
+test("cooldown per CLI: the reviewer's CLI out of quota holds reviews only; the executor's holds new work only", () => {
+  const un = (agent, role = "reviewer") => ({ at: ago(10), role, agent, pr: 40, turns: 0, usd: 0, outcome: "unavailable", unavailable: "quota" })
+  const base = { issues: [issue(1)], prs: [pr(40, "pipeline/9-x", "h")] }
+  const split = cfg({ agents: { executor: "claude", reviewer: "codex" } })
+  // Codex (the reviewer) is out: reviews wait, new work goes on
+  const rev = plan({ ...base, ledger: [un("codex")] }, split)
+  assert.deepEqual(fixes(rev), [[1, 0]])
+  assert.deepEqual(rev.dispatchReview, [])
+  assert.equal(rev.cooldown, null)
+  assert.equal(rev.reviewCooldown.agent, "codex")
+  assert.ok(noted(rev, /quota \(the reviewer, codex\)/))
+  assert.match(rev.board.find((e) => e.pr === 40).text, /quota/)
+  // Claude (the executor) is out: new work waits, reviews go on
+  const fix = plan({ ...base, ledger: [un("claude", "executor")] }, split)
+  assert.deepEqual(fixes(fix), [])
+  assert.deepEqual(fix.dispatchReview.map((r) => r.pr), [40])
+  // one CLI on both sides: everything waits, as before
+  const same = plan({ ...base, ledger: [un("codex")] }, cfg({ agents: { executor: "codex", reviewer: "codex" } }))
+  assert.deepEqual([fixes(same), same.dispatchReview], [[], []])
+  // a Codex outage means nothing to a pipeline that runs only Claude Code
+  const other = plan({ ...base, ledger: [un("codex")] })
+  assert.deepEqual([fixes(other), other.dispatchReview.map((r) => r.pr)], [[[1, 0]], [40]])
+})
+
 test("cooldown: nothing is dispatched while the agent is unavailable; afterwards one probe, then back to normal", () => {
   const un = (minutes, o = {}) => ({ at: ago(minutes), role: "executor", issue: 1, turns: 0, usd: 0, outcome: "unavailable", unavailable: "quota", ...o })
   const base = { issues: [issue(1), issue(2), issue(3)], prs: [pr(40, "pipeline/9-x", "h")] }

@@ -505,7 +505,7 @@ function makeWorld({ cfg = config(), start = "2026-11-16T04:00:00Z", botLogin = 
     makeGit,
     proc: { run: () => ({ rc: 0, stdout: "", stderr: "" }), must: () => "", shell: () => ({ rc: 0, stdout: "", stderr: "" }) },
     fs: { read: (p) => readFileSync(p, "utf8"), write: () => {}, exists: (p) => bundles.has(p), mkdtemp: (prefix) => `/tmp/${prefix}${++tmp}` },
-    claude,
+    agent: claude,
     ledger: {
       read: () => clone(w.ledger),
       append: (e) => {

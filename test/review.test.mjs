@@ -475,3 +475,13 @@ test("a result that is missing or broken is a failed review, counted, never a ve
     assert.equal(f.statuses().at(-1).state, "pending", label)
   }
 })
+
+test("a machine the agent may not run on: the reviewer is not started, and it is not this PR's fault", async () => {
+  const f = fake()
+  f.io.machineProblem = () => "the agent CLI \"claude\" is version 2.0.1; the engine needs 2.1.0 or later"
+  const r = await run({ pr: 7 }, f.io)
+  assert.deepEqual([r.outcome, r.attempt, r.unavailable], ["failed", 0, "runner"])
+  assert.equal(f.calls.claude.length, 0)
+  assert.match(f.statuses().at(-1).description, /^Review did not run: the agent is unavailable \(runner: the agent's machine refused to run it/)
+  assert.deepEqual([f.calls.ledger[0].outcome, f.calls.ledger[0].unavailable], ["unavailable", "runner"])
+})

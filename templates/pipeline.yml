@@ -89,6 +89,9 @@ limits:
   issue_max_usd: 20
   # Model spend per day for the whole repository, in US dollars. Nothing new starts past it.
   daily_usd: 30
+  # Agent runs per day (executor and reviewer together), counted from midnight UTC.
+  # 0 is no limit. Useful on a Claude subscription, where daily_usd is only an estimate.
+  daily_runs: 0
   # The executor's agent is stopped after this many minutes. At most about 240: the CI
   # job itself ends after 300, and setup and checks need room too.
   executor_minutes: 120
@@ -110,8 +113,20 @@ labels:
   # Reserved for follow-up issues (things the reviewer noted but did not block on).
   # Version 0.1 lists follow-ups in the review comment and does not open issues yet.
   followup: "pipeline:followup"
+  # On the status board, the one issue the pipeline keeps up to date with where every
+  # piece of work is and what it waits for.
+  board: "pipeline:board"
   # The reviewer labels each pull request with its level: level:0 ... level:3.
   level_prefix: "level:"
+
+# Keep the status board issue up to date. false: no board.
+board: true
+
+# A machine of your own as the agent's runner (the PIPELINE_AGENT_RUNS_ON variable).
+self_hosted:
+  # The engine refuses that for a public repository, because the agent runs the
+  # repository's code and the machine keeps what a run leaves behind. true accepts it.
+  allow_public: false
 
 # The name of the commit status that carries the review verdict. If you protect the base
 # branch with required status checks, this is the name to require.

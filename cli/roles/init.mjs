@@ -30,7 +30,7 @@ import { BOT_VARIABLE, CALLERS, NEEDED, parseCaller } from "./doctor.mjs"
 const ENGINE_ROOT = fileURLToPath(new URL("../..", import.meta.url))
 const CONFIG_PATH = ".coteam/pipeline.yml"
 // What the templates carry where the installed release goes.
-export const TEMPLATE_REF = "v0.2.0"
+export const TEMPLATE_REF = "v0.3.0"
 // GitHub's limit on the name of an App.
 const APP_NAME_MAX = 34
 const GITHUB = "https://github.com"

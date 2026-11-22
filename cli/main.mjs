@@ -6,9 +6,13 @@
 //   fix|review agent --order DIR --result DIR     prepare writes the work order, agent runs the agent and leaves a result,
 //   fix|review publish --order DIR --sha256 H --result DIR   publish checks both and writes to GitHub
 //   tick [--dry]                                dispatcher
+//   status [--repo owner/name] [--json]         the status board as the next round would write it (it only reads;
+//                                               on a person's machine it uses their `gh` login)
 //   spec check <file | - | issue number>        check a spec issue's format (a file or stdin needs no token)
 //   doctor [--fix]                              check the installation of this repository on GitHub (it only reads;
 //                                               --fix creates the labels that are missing)
+//   doctor --runner [--try]                     check this machine for running the agent's job (a self-hosted
+//                                               runner), as the runner's user; --try asks the agent CLI one question
 //   app-token <app-id> <owner/repo> [--login]   PEM on stdin -> an installation token on stdout
 //                                               (--login: and on a second line the app's login, "<slug>[bot]")
 //   init <scan | files | check | app>           the installer's steps, run on a person's machine by the
@@ -22,8 +26,8 @@
 // holds no bot token at all; this rule is what protects a whole `fix` or `review` run in one
 // process, and costs nothing to keep.) So: no dynamic import() anywhere under cli/, and no
 // child process that is started from a file of the engine (test/main.test.mjs checks both).
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadConfig, presetOf } from "./core/config.mjs"
@@ -31,6 +35,7 @@ import { BUNDLE_FILE, MAX_RESULT_BYTES, openOrder, ORDER_FILE, RESULT_FILE, seal
 import { ALWAYS_FORBIDDEN, forbiddenHits } from "./core/policy.mjs"
 import { checkSpec } from "./core/spec.mjs"
 import { appLogin, mintAppToken } from "./io/app-token.mjs"
+import { checkMachine, RUNNER_TEXT } from "./io/machine.mjs"
 import { run as runProc } from "./io/proc.mjs"
 import { HOME, makeIo } from "./io/real.mjs"
 import * as doctorRole from "./roles/doctor.mjs"
@@ -49,8 +54,9 @@ export const TEXT = {
     "  review --pr N [--dry]",
     "  fix|review prepare ... --order DIR | agent --order DIR --result DIR | publish --order DIR --sha256 H --result DIR",
     "  tick [--dry]",
+    "  status [--repo owner/name] [--json]",
     "  spec check <file | - | issue number>",
-    "  doctor [--fix]",
+    "  doctor [--fix] | doctor --runner [--try]",
     "  app-token <app-id> <owner/repo> [--login]   (PEM on stdin)",
     "  init <scan | files | check | app>           (the installer's steps; `init` alone lists them)",
   ].join("\n"),
@@ -60,6 +66,8 @@ export const TEXT = {
   reviewNeeds: "review needs --pr N",
   partNeeds: (flag) => `this part needs --${flag} DIR`,
   notOrder: (name) => `the work order is not one for "${name}"`,
+  noRepo: "status: say which repository (--repo owner/name), or run it in a checkout whose origin is on GitHub",
+  noToken: "status: no token (set PIPELINE_TOKEN or GH_TOKEN, or log in with `gh auth login`)",
   specOk: "The spec has no problems.",
   specProblems: (n) => `The spec has ${n} problem${n === 1 ? "" : "s"}:`,
   specUsage: "usage: main.mjs spec check <file | - | issue number>",
@@ -200,10 +208,50 @@ async function rolePart(name, part, opts, flags, { env, cwd, out }) {
   return done(role.publish(order, result, makeIo({ env, cwd }), { bundle: plainFile(bundle) ? bundle : "" }))
 }
 
+// The status board, printed (cli/roles/tick.mjs status). It only reads, so on a person's machine
+// it may use what they have: the repository from --repo or the checkout's origin, the token
+// from PIPELINE_TOKEN, GH_TOKEN or their `gh` login.
+async function status(flags, { env, cwd, out }) {
+  const e = { ...env }
+  if (typeof flags.repo === "string" && flags.repo.trim()) e.GITHUB_REPOSITORY = flags.repo.trim()
+  if (!e.GITHUB_REPOSITORY) {
+    const url = runProc("git", ["-C", cwd, "remote", "get-url", "origin"]).stdout.trim()
+    const m = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(url)
+    if (!m) throw new Error(TEXT.noRepo)
+    e.GITHUB_REPOSITORY = m[1]
+  }
+  if (!e.PIPELINE_TOKEN && !(e.PIPELINE_APP_ID && e.PIPELINE_APP_KEY)) {
+    let t = e.GH_TOKEN || e.GITHUB_TOKEN || ""
+    if (!t) {
+      try {
+        t = runProc("gh", ["auth", "token"]).stdout.trim()
+      } catch {
+        // no gh here
+      }
+    }
+    if (!t) throw new Error(TEXT.noToken)
+    e.PIPELINE_TOKEN = t
+  }
+  const io = makeIo({ env: e, cwd, log: out })
+  const res = await tickRole.status({ json: bool(flags, "json") }, io)
+  return res?.ok ? 0 : 1
+}
+
 // The installation check (cli/roles/doctor.mjs). It needs the repository's name and a token
 // like every role, but not a working config: a config that is missing or does not load is
 // one of the things it reports. Its lines are the output; no JSON summary is printed.
-async function doctor({ fix }, { env, cwd, out }) {
+async function doctor({ fix, runner, tryAgent }, { env, cwd, out }) {
+  if (runner) {
+    const deps = { env, home: homedir(), platform: process.platform, uid: typeof process.getuid === "function" ? process.getuid() : -1, run: runProc, exists: existsSync, read: (p) => readFileSync(p, "utf8"), list: (d) => readdirSync(d) }
+    const res = checkMachine(deps, { bin: String(env.PIPELINE_CLAUDE_BIN || "").trim() || "claude", tryAgent })
+    out(RUNNER_TEXT.title)
+    for (const r of res.results) {
+      out(`${r.state.padEnd(4)}  ${r.text}`)
+      if (r.hint) out(`      -> ${r.hint}`)
+    }
+    out(RUNNER_TEXT.summary(res.counts))
+    return res.ok ? 0 : 1
+  }
   const io = makeIo({ env, cwd, log: out, tolerateConfig: true })
   const res = await doctorRole.run({ fix }, io)
   return res?.ok ? 0 : 1
@@ -324,11 +372,13 @@ export async function main(argv, ctx = {}) {
       }
       case "tick":
         return await role("tick", { dry }, io)
+      case "status":
+        return await status(flags, io)
       case "spec":
         if (rest[0] !== "check") throw new Error(TEXT.specUsage)
         return await specCheck(rest[1], io)
       case "doctor":
-        return await doctor({ fix: bool(flags, "fix") }, io)
+        return await doctor({ fix: bool(flags, "fix"), runner: bool(flags, "runner"), tryAgent: bool(flags, "try") }, io)
       case "app-token":
         return await appToken(rest, io, { login: bool(flags, "login") })
       case "init":

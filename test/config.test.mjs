@@ -160,3 +160,15 @@ test("YAML errors keep their line number and say which file; a non-map top level
   assert.match(problemsOf("owners:\n")[0], /^owners: must be a list/)
   assert.match(problemsOf("owners: [123]\n")[0], /quote numbers/)
 })
+
+test("v0.3 keys: daily_runs, the status board and its label, self-hosted runners for public repositories", () => {
+  const c = loadConfig("version: 1\n")
+  assert.deepEqual([c.limits.daily_runs, c.board, c.labels.board, c.self_hosted.allow_public], [0, true, "pipeline:board", false])
+  const set = loadConfig("version: 1\nboard: false\nself_hosted:\n  allow_public: true\nlimits:\n  daily_runs: 40\nlabels:\n  board: status\n")
+  assert.deepEqual([set.limits.daily_runs, set.board, set.labels.board, set.self_hosted.allow_public], [40, false, "status", true])
+  assert.match(problemsOf("board: yes please\n")[0], /^board: must be true or false/)
+  assert.match(problemsOf("self_hosted:\n  allow_public: 1\n")[0], /^self_hosted\.allow_public: must be true or false/)
+  assert.match(problemsOf("self_hosted:\n  allow_private: true\n")[0], /unknown key "self_hosted\.allow_private"/)
+  assert.match(problemsOf("limits:\n  daily_runs: -1\n")[0], /^limits\.daily_runs: must be a whole number >= 0/)
+  assert.match(problemsOf("labels:\n  board: pipeline\n")[0], /labels\.board: "pipeline" is already used by labels\.work/)
+})

@@ -482,6 +482,13 @@ export async function agent(order, io, { bundle }) {
   let usage = null
 
   const work = async () => {
+    // Before anything from the repository runs: may the agent run on this machine at all?
+    const refused = io.machineProblem ? io.machineProblem() : ""
+    if (refused) {
+      io.log(`refused: ${refused}`)
+      usage = { turns: 0, usd: 0, models: [], unavailable: "runner" }
+      return { outcome: "unavailable" }
+    }
     dropStoredCredentials(git)
     const depth = G(["rev-parse", "--is-shallow-repository"]).trim() === "true" ? [SHALLOW_DEPTH] : []
     git.remote(["fetch", "-q", "--no-tags", ...depth, git.url, `+refs/heads/${base}:refs/remotes/origin/${base}`])

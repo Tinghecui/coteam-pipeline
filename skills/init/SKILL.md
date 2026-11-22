@@ -176,6 +176,18 @@ It asks for the value and shows nothing. Recommend a key made only for the pipel
 a spend limit set in the Anthropic console as a second brake. Wait until they say it is
 done, then confirm the secret exists by name: `gh secret list --repo OWNER/REPO`.
 
+Two other ways, if the person asks or has no API key (offer them, do not push them):
+
+- **A Claude subscription**: they run `claude setup-token` on their own machine and store
+  the result with `gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo OWNER/REPO` instead. Tell
+  them that an API key, if one is also set, is used first, that the subscription's terms
+  are theirs to check, and that `limits.daily_runs` caps the runs a day.
+- **A machine of their own for the agent's job**: point them to "Run the agent on your
+  own machine" in `docs/install.md`. They register the runner and run
+  `doctor --runner --try` on it themselves; you do not log in to their machine. Say that
+  the engine refuses it for a public repository unless `self_hosted.allow_public` is set,
+  and why.
+
 ## Step 6. Open the installation pull request
 
 Create a branch (`coteam-pipeline/install`), stage the four files by name, commit, push,

@@ -34,6 +34,8 @@ export const DEFAULTS = deepFreeze({
     issue_max_runs: 5,
     issue_max_usd: 20,
     daily_usd: 30,
+    // 0 = no limit on the number of runs, only on the money (daily_usd).
+    daily_runs: 0,
     executor_minutes: 120,
     reviewer_minutes: 20,
   },
@@ -44,9 +46,14 @@ export const DEFAULTS = deepFreeze({
     redo: "pipeline:redo",
     followup: "pipeline:followup",
     level_prefix: "level:",
+    board: "pipeline:board",
   },
   status_context: "pipeline/review",
   branch_prefix: "pipeline/",
+  // The status board: one issue the tick rewrites with what every piece of work waits for.
+  board: true,
+  // A self-hosted runner for the agent's job of a public repository is refused unless this says otherwise.
+  self_hosted: { allow_public: false },
 })
 
 // Preset names become file names (`presets/<name>.yml`), so they must not be able to walk out of that directory.
@@ -60,6 +67,7 @@ const oneOf = (...xs) => (v) => (xs.includes(v) ? "" : `must be one of: ${xs.joi
 const int = (min, max = Infinity) => (v) =>
   Number.isInteger(v) && v >= min && v <= max ? "" : `must be a whole number ${max === Infinity ? `>= ${min}` : `from ${min} to ${max}`}`
 const positive = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? "" : "must be a number > 0")
+const yesNo = (v) => (typeof v === "boolean" ? "" : "must be true or false")
 const nonNegative = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? "" : "must be a number >= 0")
 
 const SCHEMA = {
@@ -83,12 +91,15 @@ const SCHEMA = {
     issue_max_runs: int(1),
     issue_max_usd: positive,
     daily_usd: positive,
+    daily_runs: int(0),
     executor_minutes: int(1),
     reviewer_minutes: int(1),
   },
-  labels: { work: str, decide: str, approved: str, redo: str, followup: str, level_prefix: str },
+  labels: { work: str, decide: str, approved: str, redo: str, followup: str, level_prefix: str, board: str },
   status_context: str,
   branch_prefix: (v) => (typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(v) ? "" : "must be a branch name prefix such as pipeline/"),
+  board: yesNo,
+  self_hosted: { allow_public: yesNo },
 }
 
 // Unknown keys are errors, not ignored: `auto_max_levle: 0` silently falling back to a
@@ -139,7 +150,7 @@ function crossChecks(c, problems) {
   if (isMap(limits) && Number.isInteger(limits.max_rework) && Number.isInteger(limits.issue_max_runs) && limits.issue_max_runs < limits.max_rework + 1)
     problems.push(`limits.issue_max_runs: must be at least max_rework + 1 (${limits.max_rework + 1}), or the last reworks can never run`)
   if (isMap(labels)) {
-    const names = ["work", "decide", "approved", "redo", "followup"]
+    const names = ["work", "decide", "approved", "redo", "followup", "board"]
     const seen = new Map()
     for (const k of names) {
       if (!filled(labels[k])) continue

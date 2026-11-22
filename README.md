@@ -7,13 +7,14 @@ You write an issue and put a label on it. An agent writes the change and opens a
 request, a second agent reviews it, and a set of risk rules decides whether the pull
 request is merged without a person, waits for a default, or is put in front of an owner.
 
-Everything runs in your repository's GitHub Actions, with your own Anthropic API key and a
-GitHub App that you create and hold the key of. There is no server; the authors of this
+Everything runs in your repository's GitHub Actions, with your own Anthropic API key (or
+Claude subscription) and a GitHub App that you create and hold the key of. The agent's job
+can run on GitHub's machines or on one of yours. There is no server; the authors of this
 project see nothing of your code or credentials.
 
 ## Status
 
-**The current release is `v0.2.0`. It is young.**
+**The current release is `v0.3.0`. It is young.**
 
 The engine (`cli/`), the reusable workflows and the templates have run end to end on a
 small public demonstration repository, with the real Claude Code CLI and the real GitHub
@@ -29,8 +30,16 @@ Since `v0.2.0` the executor and the reviewer each run as three jobs, so that the
 is never on the runner the agent ran on (see
 [Threat model and known gaps](docs/install.md#threat-model-and-known-gaps)). That has run
 on the demonstration repository too: new work, a rework with a merge conflict, reviews
-and merges. `v0.1.0` does not have it; if you installed that, change `v0.1.0` to `v0.2.0`
-in your three workflow files (twice in each). Nothing else has to change.
+and merges. `v0.1.0` does not have it; if you installed that, upgrade (see
+[Upgrading](docs/install.md#threat-model-and-known-gaps)).
+
+`v0.3.0` adds a status board (one issue that says where every piece of work is and what it
+waits for, and a `status` command that prints the same), a daily limit on the number of
+agent runs, a Claude subscription token as an alternative to the API key, and the agent's
+job on a machine of your own
+([how](docs/install.md#run-the-agent-on-your-own-machine)). The board has run on the
+demonstration repository; a machine of one's own and a subscription token are tested only
+in the test suite so far.
 
 What has not been verified: a codebase of real size, or any stack but a small Node
 project; a repository owned by an organisation; answers by people who are not owners and

@@ -286,6 +286,32 @@ outcome `failed`. `pr` and `rework` exist only as `publish`'s own conclusion.
 Not checkable from outside, and said so in docs/install.md, "Threat model and known gaps":
 that `stack.check` passed, and the usage figures.
 
+## Status board, own machines, subscriptions (added in `v0.3.0`)
+
+- **Board.** `plan()` also returns `board` (one entry per open pipeline pull request and
+  per work issue: `{ pr?, issue, row, state, text, inPr? }`, state one of `working`,
+  `queued`, `checks`, `owner`, `stuck`, `merging`, `idle`), `held` (why nothing new is
+  handed out, or empty) and `runsToday`. `core/board.mjs` renders it; the tick writes it to
+  the lowest open issue labelled `labels.board` that the pipeline's own login opened,
+  creates one if there is none, and rewrites it only when the text before the notes and
+  the footer changed. `main.mjs status` prints the same and writes nothing. `board: false`
+  turns it off.
+- **`limits.daily_runs`.** Executor and reviewer runs today (ledger entries that are an
+  attempt), 0 = no limit. Checked with `daily_usd` in `budget()`.
+- **The agent's job on any runner.** `fix.yml` and `review.yml` take `agent_runs_on`
+  (a label, or a JSON list); the callers pass the variable `PIPELINE_AGENT_RUNS_ON`.
+  `prepare` and `publish` stay on `ubuntu-latest`. On a self-hosted runner the workflow
+  installs nothing: the machine's `claude` (or `PIPELINE_CLAUDE_BIN`) is used.
+- **Machine check.** `io/machine.mjs` runs at the start of the agent part, before any of
+  the repository's code: it refuses a self-hosted runner for a public repository (unless
+  `self_hosted.allow_public`) and a missing or too old CLI. A refusal is the outcome
+  `unavailable` with the reason `runner`: cooldown, not charged to the issue.
+  `doctor --runner [--try]` is the same check plus a look for credentials on the machine,
+  run by a person on it.
+- **Credentials.** `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` are both optional
+  secrets; the first wins when both are set; with neither, the CLI's own login on the
+  machine. Empty values are not passed to the agent.
+
 ## Roles and io (added after the core landed)
 
 Every role is `cli/roles/<name>.mjs` exporting `async function run(opts, io) -> {ok, ...}`

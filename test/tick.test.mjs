@@ -49,6 +49,7 @@ function fakeIo(world, { config = cfg(), fail = () => false, env = {}, botLogin 
     let m
     if (world.failRead?.(path)) throw new Error(`GET ${path}: 502`)
     if (path.startsWith("issues?state=open&labels=pipeline%3Adecide")) return w.items
+    if (path.startsWith("issues?state=open&labels=pipeline%3Aboard")) return w.boards || []
     if (path.startsWith("issues?state=closed&labels=pipeline%3Adecide")) return w.closedItems
     if (path.startsWith("issues?state=open&labels=pipeline&")) return w.issues
     if ((m = /^issues\/(\d+)\/comments/.exec(path))) return w.comments[m[1]] || []
@@ -147,6 +148,9 @@ test("one round, end to end: reads the state, carries the plan out in a safe ord
     "POST issues/41/comments",
     "DISPATCH pipeline-fix.yml",
     "DISPATCH pipeline-fix.yml",
+    // after the round: the status board, opened because there is none yet
+    "POST labels",
+    "POST issues",
   ])
   const by = (path, method = "POST") => calls.filter((c) => c.path === path && c.method === method)
   assert.deepEqual(parseMark("row-done", by("issues/6/comments")[0].body.body), { row: 0, pr: 30 })
@@ -167,7 +171,14 @@ test("one round, end to end: reads the state, carries the plan out in a safe ord
   assert.match(lines.join("\n"), /tick: 7 work issues, 5 open pipeline PRs, 1 open decision item, 0 executor runs going/)
   assert.match(lines.join("\n"), /tick \(on\): fix 1, rework 1, review 1, merge 2, new items 1, answers 1/)
   assert.match(lines.join("\n"), /done: merge PR #40 \(review\)/)
-  assert.match(lines.at(-1), /tick: 9 done, 0 failed/)
+  assert.match(lines.join("\n"), /tick: 9 done, 0 failed\ntick: status board created$/)
+  const board = by("issues")[1].body
+  assert.equal(board.title, "Pipeline status")
+  assert.deepEqual(board.labels, ["pipeline:board"])
+  assert.match(board.body, /PR #43 \(#5\) \| waits for an owner: a decision item is opened now/)
+  assert.match(board.body, /PR #42 \(#4\) \| the review is dispatched now/)
+  assert.match(board.body, /#1 \| the executor is dispatched now/)
+  assert.equal(res.board, "created")
 })
 
 test("a failing action does not stop the others; the rest of its own entry is skipped; the role returns ok = false and lists it", async () => {
@@ -190,7 +201,7 @@ test("a failing action does not stop the others; the rest of its own entry is sk
   assert.ok(calls.some((c) => c.path === "pulls/44/merge"))
   assert.ok(calls.some((c) => c.path === "issues" && c.method === "POST"))
   assert.match(lines.join("\n"), /FAILED: dispatch rework 1 of PR #41: the reviewer rejected it: POST issues\/41\/comments: 422 Unprocessable/)
-  assert.match(lines.at(-1), /tick: 6 done, 2 failed/)
+  assert.match(lines.join("\n"), /tick: 6 done, 2 failed/)
 })
 
 test("an answer that could not be recorded: what follows from it does not run; a failed label call posts no comment after it", async () => {
@@ -291,12 +302,14 @@ test("record mode leaves a due default alone", async () => {
   }
   const rec = fakeIo(w, { config: cfg({ mode: "record" }) })
   const res = await run({}, rec.io)
-  assert.deepEqual(rec.calls, [])
+  // nothing but the status board, which record mode writes as well
+  assert.deepEqual(short(rec.calls), ["POST labels", "POST issues"])
+  assert.match(rec.calls[1].body.body, /Mode "record"/)
   assert.deepEqual(res.skipped.map((s) => s.list), ["applyDefaults"])
   // in mode on the default is applied and the PR merged
   const on = fakeIo(w)
   await run({}, on.io)
-  assert.deepEqual(short(on.calls), ["POST statuses/h40", "POST issues/40/comments", "PATCH issues/900", "POST issues/900/comments", "PUT pulls/40/merge"])
+  assert.deepEqual(short(on.calls), ["POST statuses/h40", "POST issues/40/comments", "PATCH issues/900", "POST issues/900/comments", "PUT pulls/40/merge", "POST labels", "POST issues"])
 })
 
 // ---------- gather ----------
@@ -446,4 +459,59 @@ test("gather: a PR whose mergeability GitHub is still computing is read again af
   const again = await gather(io)
   assert.equal(again.state.prs[0].mergeable, null)
   assert.ok(reads.length > 0)
+})
+
+// ---------- the status board ----------
+
+test("status board: rewritten only when what it says changed; one opened by someone else is not the board; it never fails the round", async () => {
+  const first = fakeIo(world())
+  await run({}, first.io)
+  const body = first.calls.find((c) => c.path === "issues" && c.body.labels.includes("pipeline:board")).body.body
+  // the same state an hour later: the board says the same, nothing is written
+  const w = { ...world(), boards: [{ number: 77, body: body.replace(/at \S+Z/, "at 2026-11-16T03:00:00Z"), user: { login: "bot" } }] }
+  const again = fakeIo(w)
+  const res = await run({}, again.io)
+  assert.equal(res.board, "same")
+  assert.ok(!again.calls.some((c) => c.path === "issues/77"))
+  // the board says something else: its body is rewritten in place
+  const changed = fakeIo({ ...world(), boards: [{ number: 77, body: "old", user: { login: "bot" } }] })
+  assert.equal((await run({}, changed.io)).board, "updated")
+  assert.deepEqual(changed.calls.filter((c) => c.path === "issues/77").map((c) => [c.method, Object.keys(c.body)]), [["PATCH", ["body"]]])
+  // an issue with the label that someone else opened is left alone, and a board of our own is opened
+  const foreign = fakeIo({ ...world(), boards: [{ number: 78, body: "hello", user: { login: "mallory" } }] })
+  assert.equal((await run({}, foreign.io)).board, "created")
+  assert.ok(!foreign.calls.some((c) => c.path === "issues/78"))
+  // off in the config: not looked up, not written
+  const off = fakeIo(world(), { config: cfg({ board: false }) })
+  const offRes = await run({}, off.io)
+  assert.equal(offRes.board, "off")
+  assert.ok(!off.reads.some((r) => r.includes("pipeline%3Aboard")))
+  // the lookup fails: the round goes on and says so; writing fails: the same
+  const blind = fakeIo({ ...world(), failRead: (p) => p.includes("pipeline%3Aboard") })
+  const blindRes = await run({}, blind.io)
+  assert.equal(blindRes.ok, true)
+  assert.equal(blindRes.board, "unreadable")
+  assert.ok(blindRes.notes.some((n) => /the status board could not be looked up/.test(n)))
+  const stuck = fakeIo(world(), { fail: (c) => c.path === "issues" && c.body?.labels?.includes("pipeline:board") })
+  const stuckRes = await run({}, stuck.io)
+  assert.equal(stuckRes.ok, true)
+  assert.match(stuckRes.board, /^could not be written: POST issues: 422/)
+  // a dry run writes no board either
+  const dry = fakeIo(world())
+  await run({ dry: true }, dry.io)
+  assert.deepEqual(dry.calls, [])
+})
+
+test("status: the board the next round would write, printed, nothing written", async () => {
+  const { status } = await import("../cli/roles/tick.mjs")
+  const s = fakeIo(world())
+  const res = await status({}, s.io)
+  assert.deepEqual(s.calls, [])
+  assert.match(res.body, /^<!-- coteam-pipeline:board v1 -->\n# Pipeline status/)
+  assert.match(s.lines.join("\n"), /PR #44 \(#7\) \| approved; merged now \(released by @ann\)/)
+  const j = fakeIo(world())
+  await status({ json: true }, j.io)
+  const parsed = JSON.parse(j.lines[0])
+  assert.ok(Array.isArray(parsed.board) && parsed.board.length > 5)
+  assert.equal(parsed.held, "")
 })

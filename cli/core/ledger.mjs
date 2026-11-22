@@ -31,6 +31,7 @@ export function parseLedger(text) {
 // use up the issue's allowance, or a refusal would count as an attempt and the issue would be
 // called stuck without the agent ever having looked at it.
 export const NOT_AN_ATTEMPT = ["unavailable", "skipped", "dry"]
+const AGENT_ROLES = ["executor", "reviewer"]
 
 // The executor runs that count against an issue's (or a row's) allowance, oldest first.
 //   row:   given = only this row; entries without a row count as row 0
@@ -49,11 +50,11 @@ export function countedRuns(entries, { issue, row = null, since = "" }) {
 }
 
 // May the executor start on this issue (or this row of a spec issue)?
-//   limits: config.limits (daily_usd, issue_max_runs, issue_max_usd)
+//   limits: config.limits (daily_usd, daily_runs, issue_max_runs, issue_max_usd)
 //   row:    given = count only this row, each row has its own allowance; entries without a row count as row 0
 //   since:  time of the latest human decision (marks.countSince). Only executor runs after it
 //           count: a human gave a new direction, which is worth a fresh set of attempts.
-// Returns { ok, reason, capped, day, today, issueRuns, issueUsd }. `capped` = this issue/row
+// Returns { ok, reason, capped, day, today, runsToday, issueRuns, issueUsd }. `capped` = this issue/row
 // used up its own allowance (a human has to decide); a daily stop is not capped, it just waits for tomorrow.
 // Runs where the agent was unavailable (quota, overload, login) do not count against the
 // issue: that is not the issue's fault. Neither does a run that refused to start (`skipped`).
@@ -65,7 +66,10 @@ export function budget(entries, { issue, row = null, limits, now = new Date(), s
     return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : ""
   }
   const list = entries || []
-  const today = list.filter((e) => dayOf(e) === day).reduce((s, e) => s + usdOf(e), 0)
+  const todays = list.filter((e) => dayOf(e) === day)
+  const today = todays.reduce((s, e) => s + usdOf(e), 0)
+  // Runs of either agent today that really started it: what limits.daily_runs counts.
+  const runsToday = todays.filter((e) => AGENT_ROLES.includes(e.role) && !NOT_AN_ATTEMPT.includes(e.outcome)).length
   const mine = countedRuns(list, { issue, row, since })
   const issueRuns = mine.length
   const issueUsd = mine.reduce((s, e) => s + usdOf(e), 0)
@@ -73,9 +77,10 @@ export function budget(entries, { issue, row = null, limits, now = new Date(), s
   let reason = ""
   let capped = false
   if (today >= limits.daily_usd) reason = TEXT.dailyCap({ day, spent: today, cap: limits.daily_usd })
+  else if (limits.daily_runs > 0 && runsToday >= limits.daily_runs) reason = TEXT.dailyRuns({ day, runs: runsToday, cap: limits.daily_runs })
   else if (issueRuns >= limits.issue_max_runs) [reason, capped] = [TEXT.runCap({ what, runs: issueRuns, max: limits.issue_max_runs, usd: issueUsd }), true]
   else if (issueUsd >= limits.issue_max_usd) [reason, capped] = [TEXT.usdCap({ what, runs: issueRuns, max: limits.issue_max_usd, usd: issueUsd }), true]
-  return { ok: !reason, reason, capped, day, today, issueRuns, issueUsd }
+  return { ok: !reason, reason, capped, day, today, runsToday, issueRuns, issueUsd }
 }
 
 // ---------- the agent CLI cannot be used: out of quota / overloaded / logged out / never started ----------
@@ -127,8 +132,6 @@ export function unavailableReason(msgs, { rc = 0, stderr = "" } = {}) {
   if (!all.length) return { reason: "not_started", detail: err.replace(/\s+/g, " ").trim().slice(-300) }
   return null
 }
-
-const AGENT_ROLES = ["executor", "reviewer"]
 
 // Are we cooling down? Looks at the "unavailable" entries after the last run that really
 // worked (an agent role with turns > 0, whatever its outcome). The cooldown ends at the

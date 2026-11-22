@@ -875,3 +875,15 @@ test("a pull request head that moved between the jobs: publish pushes nothing an
   assert.equal(sh(w.root, "--git-dir", w.remote, "log", "-1", "--format=%s", w.prs[50].head.ref), "by hand")
   assert.equal(w.marks("claim", 5)[0].released, true)
 })
+
+test("a machine the agent may not run on: nothing from the repository runs, and it counts as the agent being unavailable", async () => {
+  const w = world()
+  w.config.stack.setup = ["npm ci"]
+  w.io.machineProblem = () => "acme/app is public and this job runs on a self-hosted runner."
+  const res = await run({ issue: 5 }, w.io)
+  assert.equal(res.outcome, "unavailable")
+  assert.deepEqual([w.prompts.length, w.shellLines.length], [0, 0])
+  assert.deepEqual([w.entries[0].outcome, w.entries[0].unavailable, w.entries[0].usd], ["unavailable", "runner", 0])
+  assert.equal(w.marks("claim", 5)[0].released, true)
+  assert.deepEqual(w.remoteBranches(), ["main"])
+})

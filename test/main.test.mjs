@@ -172,7 +172,7 @@ test("doctor: runs the installation check (cli/roles/doctor.mjs) with --fix pass
   assert.match(r.stdout, /^Pipeline doctor for o\/r$/m, r.stderr)
   assert.match(r.stdout, /^ok {4}\.coteam\/pipeline\.yml loads \(mode record, base main\)$/m)
   // the fake repository has no labels: that fails, and nothing was written
-  assert.match(r.stdout, /^FAIL {2}9 labels are missing: pipeline, /m)
+  assert.match(r.stdout, /^FAIL {2}10 labels are missing: pipeline, /m)
   assert.match(r.stdout, /^Not ready: /m)
   assert.equal(r.status, 1)
   assert.ok(!r.stdout.includes("{\"ok\""), "the doctor prints its lines, not a JSON summary")
@@ -194,8 +194,8 @@ test("doctor: runs the installation check (cli/roles/doctor.mjs) with --fix pass
   // --fix reaches the role: the missing labels are created
   const fixing = fakeGh()
   const f = spawnSync(process.execPath, [MAIN, "doctor", "--fix"], { cwd: work, env: { ...env, ...fixing.env }, encoding: "utf8" })
-  assert.match(f.stdout, /^ok {4}created 9 labels: pipeline, /m, f.stderr)
-  assert.equal((fixing.read().match(/^api -X POST repos\/o\/r\/labels --input -$/gm) || []).length, 9)
+  assert.match(f.stdout, /^ok {4}created 10 labels: pipeline, /m, f.stderr)
+  assert.equal((fixing.read().match(/^api -X POST repos\/o\/r\/labels --input -$/gm) || []).length, 10)
 })
 
 test("doctor: a config that is missing or does not load is a line of the report; every other role stops there with the reason", { skip: process.platform === "win32" }, () => {

@@ -338,6 +338,11 @@ export function prepare(opts, io) {
 // The merge commit is fetched by its id, so this is the very code `prepare` measured.
 export async function agent(order, io) {
   const config = io.config
+  const refused = io.machineProblem ? io.machineProblem() : ""
+  if (refused) {
+    io.log(`refused: ${refused}`)
+    return { v: 1, order: orderId(order), rc: null, output: null, usage: { turns: 0, usd: 0, models: [], unavailable: "runner" } }
+  }
   const dir = io.fs.mkdtemp("pipeline-review-")
   try {
     const git = io.makeGit({ cwd: dir })

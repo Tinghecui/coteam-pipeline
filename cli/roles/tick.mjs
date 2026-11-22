@@ -1,11 +1,14 @@
 // The scheduler role: one round. Gather the state of the repository, let core/plan.mjs decide
 // (planTick, pure and tested), carry the plan out. It never runs the agent.
 //
-//   run({ dry }, io) -> { ok, mode, dry, counts, done, failures, skipped, notes, plan? }
+//   run({ dry }, io) -> { ok, mode, dry, counts, done, failures, skipped, notes, board?, plan? }
+//   status({ json }, io) -> { ok, body }: the status board as the next round would write it,
+//                         printed and not written (`main.mjs status`)
 //
 // `--dry` prints the plan as JSON and changes nothing. In mode "record" everything is done
 // except merging and applying defaults. One action that fails does not stop the others: the
 // role goes on, lists what failed and returns ok = false.
+import { renderBoard, sameBoard } from "../core/board.mjs"
 import { ciRuns } from "../core/decide.mjs"
 import { issueOfBranch, markAuthors as authorsOf } from "../core/marks.mjs"
 import { GHOST_RUN_MS, FIX_WORKFLOW, REVIEW_WORKFLOW, emptyPlan, planTick } from "../core/plan.mjs"
@@ -184,9 +187,22 @@ export async function gather(io) {
     }
   }
 
+  // ---- the status board: the oldest open one the pipeline itself opened ----
+  let board = null
+  if (config.board) {
+    try {
+      const mine = (await gh.list(`issues?state=open&labels=${label(L.board)}&per_page=100`)).filter((x) => !x.pull_request && (!markAuthors || markAuthors.map((a) => a.toLowerCase()).includes(String(x.user?.login || "").toLowerCase())))
+      const first = mine.sort((a, b) => a.number - b.number)[0]
+      if (first) board = { number: first.number, body: first.body || "" }
+    } catch (e) {
+      problems.push(TEXT.boardUnreadable(firstLine(e)))
+      board = { unreadable: true }
+    }
+  }
+
   const fromEnv = String(io.env?.PIPELINE_HAS_CHECKS || "").toLowerCase()
   const repoHasChecks = ["true", "1", "yes"].includes(fromEnv) ? true : ["false", "0", "no"].includes(fromEnv) ? false : null
-  return { state: { issues, prs, otherPrs, closedPrs, items, ledger, runs, maintainers, markAuthors, repoHasChecks, refsDone }, problems }
+  return { state: { issues, prs, otherPrs, closedPrs, items, ledger, runs, maintainers, markAuthors, repoHasChecks, refsDone }, problems, board }
 }
 
 // ---------- execute ----------
@@ -285,6 +301,54 @@ export async function execute(plan, io) {
   return { done, failures, skipped }
 }
 
+// ---------- the status board ----------
+
+const runUrlOf = (env) => (env?.GITHUB_RUN_ID && env?.GITHUB_REPOSITORY ? `${String(env.GITHUB_SERVER_URL || "https://github.com").replace(/\/+$/, "")}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : "")
+
+// Write the board when what it says changed. -> "created" | "updated" | "same" | "off" | an error line.
+// A board that cannot be written is said in the log and does not fail the round: it is a view, the work goes on without it.
+export async function writeBoard(plan, existing, io, { failures = 0 } = {}) {
+  const { config, gh } = io
+  if (!config.board) return "off"
+  if (existing?.unreadable) return "unreadable"
+  const body = renderBoard({ plan, config, now: io.now(), runUrl: runUrlOf(io.env), failures })
+  try {
+    if (existing?.number) {
+      if (sameBoard(existing.body, body)) return "same"
+      await gh.patch(`issues/${existing.number}`, { body })
+      return "updated"
+    }
+    try {
+      await gh.post("labels", { name: config.labels.board, color: "c2e0c6", description: TEXT.boardLabel })
+    } catch {
+      // it exists already
+    }
+    await gh.post("issues", { title: TEXT.boardTitle, body, labels: [config.labels.board] })
+    return "created"
+  } catch (e) {
+    return TEXT.boardFailed(firstLine(e))
+  }
+}
+
+// The board as the next round would write it, without writing anything.
+export async function status(opts, io) {
+  const { config } = io
+  if (config.mode === "off") {
+    io.log(TEXT.off)
+    return { ok: true, body: "" }
+  }
+  const { state, problems } = await gather(io)
+  const plan = planTick(state, config, io.now())
+  plan.notes = [...problems, ...plan.notes]
+  if (opts?.json) {
+    io.log(JSON.stringify({ board: plan.board, held: plan.held, spentToday: plan.spentToday, runsToday: plan.runsToday, cooldown: plan.cooldown, notes: plan.notes }, null, 2))
+    return { ok: true }
+  }
+  const body = renderBoard({ plan, config, now: io.now() })
+  io.log(body)
+  return { ok: true, body }
+}
+
 // ---------- run ----------
 
 const countsOf = (plan) => Object.fromEntries(ORDER.map((k) => [k, (plan[k] || []).length]))
@@ -304,7 +368,7 @@ export async function run(opts, io) {
     io.log(TEXT.gatherFailed(firstLine(e)))
     return { ok: false, mode: config.mode, dry, error: firstLine(e), counts: {}, done: [], failures: [{ list: "gather", what: "read the repository state", step: "gather", error: firstLine(e) }], skipped: [], notes: [] }
   }
-  const { state, problems } = gathered
+  const { state, problems, board } = gathered
   const plan = planTick(state, config, io.now())
   const notes = [...problems, ...plan.notes]
   const counts = countsOf(plan)
@@ -318,5 +382,7 @@ export async function run(opts, io) {
   for (const line of notes) io.log(TEXT.note(line))
   const { done, failures, skipped } = await execute(plan, io)
   io.log(TEXT.result(done.length, failures.length))
-  return { ok: failures.length === 0, mode: config.mode, dry, counts, done, failures, skipped, notes }
+  const boardWritten = await writeBoard({ ...plan, notes }, board, io, { failures: failures.length })
+  if (boardWritten !== "off") io.log(TEXT.board(boardWritten))
+  return { ok: failures.length === 0, mode: config.mode, dry, counts, done, failures, skipped, notes, board: boardWritten }
 }

@@ -9,6 +9,8 @@
 // (test/text.test.mjs calls every entry to make sure).
 
 const list = (items) => items.join(", ")
+// Why the agent could not be used, for the codes that do not explain themselves (ledger.mjs, cli/io/machine.mjs).
+const unavailableWhy = (code) => (code === "runner" ? "runner: the agent's machine refused to run it, the agent job's log says why" : code)
 
 export const T = {
   // ---- spec issue format (docs/spec-format.md) ----
@@ -138,6 +140,7 @@ export const taskName = (issue, row) => `#${issue}${row ? ` row ${row}` : ""}`
 // User-visible wording of budget refusals.
 export const LEDGER_TEXT = {
   dailyCap: ({ day, spent, cap }) => `${money(spent)} spent today (UTC ${day}), the daily limit is ${money(cap)}`,
+  dailyRuns: ({ day, runs, cap }) => `the agents have run ${runs} times today (UTC ${day}), the daily limit is ${cap} (limits.daily_runs)`,
   runCap: ({ what, runs, max, usd }) => `${what}: the executor has already run ${runs} times (limit ${max}), spending ${money(usd)}`,
   usdCap: ({ what, runs, max, usd }) => `${what}: the executor has already spent ${money(usd)} (limit ${money(max)}) over ${runs} runs`,
   item: ({ issue, row }) => `#${issue}${row ? ` row ${row}` : ""}`,
@@ -385,7 +388,7 @@ export const REVIEW_TEXT = {
     budget: (reason) => `budget: ${reason}`,
     noMergeRef: "GitHub did not provide a merge commit for this head",
     checkout: (detail) => `could not check out the merged code: ${detail}`,
-    unavailable: (code) => `the agent is unavailable (${code})`,
+    unavailable: (code) => `the agent is unavailable (${unavailableWhy(code)})`,
     timeout: (minutes) => `the reviewer did not finish within ${minutes} minutes`,
     noOutput: (rc) => `the reviewer gave no structured result (exit code ${rc})`,
     crashed: (detail) => `the reviewer could not be started: ${detail}`,
@@ -433,7 +436,7 @@ export const PLAN_TEXT = {
   comment: {
     rework: (attempt, max, why) => `Sent back to the executor (rework ${attempt} of at most ${max}): ${why}.`,
     budgetWait: (reason) =>
-      `Waiting for the daily budget: ${reason}. Nothing is wrong and nothing is lost: this starts by itself after midnight UTC. To start it sooner, an owner can raise \`limits.daily_usd\` in \`.coteam/pipeline.yml\` on the base branch.`,
+      `Waiting for the daily budget: ${reason}. Nothing is wrong and nothing is lost: this starts by itself after midnight UTC. To start it sooner, an owner can raise the limit named here (\`limits.daily_usd\` or \`limits.daily_runs\`) in \`.coteam/pipeline.yml\` on the base branch.`,
     reworkAgain: (attempt, max, why, send, skipped) => `Sent back to the executor again (rework ${attempt} of at most ${max}, sent ${send} times: the run before did not start, ${skipped}): ${why}.`,
     rowDone: (row, pr) => `Row ${row} is done: PR #${pr} was merged.`,
     taskDone: (pr) => `PR #${pr} was merged.`,
@@ -444,6 +447,43 @@ export const PLAN_TEXT = {
     finishedTask: (pr) => `PR #${pr} was merged. Closing this issue. If something is not right, reopen it or open a new issue.`,
   },
   status: { released: (who, item) => `Released by ${who ? `@${who}` : "default"}${item ? ` (#${item})` : ""}` },
+  // One sentence per piece of work on the status board (core/board.mjs): where it is and what it waits for.
+  board: {
+    nothing: "nothing to do right now",
+    reworking: "the executor is reworking it",
+    reworkSent: (attempt, max, why) => `sent back to the executor now (rework ${attempt} of at most ${max}): ${why}`,
+    reworkWaits: (why) => `a rework was dispatched (${why}); waiting for the new commit`,
+    reworkHeld: (why, wait) => `to be sent back (${why}); ${wait}`,
+    skipWait: (why, until) => `the executor did not start (${why}); tried again after ${until}`,
+    claimed: (run) => `claimed by run ${run || "?"}`,
+    reviewing: "the review is running",
+    reviewSent: (attempt) => `the review is dispatched now${attempt > 1 ? ` (attempt ${attempt})` : ""}`,
+    reviewHeld: (wait) => `needs a review; ${wait}`,
+    merging: (by) => `approved; merged now${by ? ` (released by @${by})` : ""}`,
+    recordMerge: 'approved; would be merged now, but mode is "record"',
+    notMerged: (why) => `approved; not merged yet: ${why}`,
+    statusLag: "approved; waiting for the review status to catch up",
+    item: (n, due) => `waits for an owner: decision item #${n}${due ? `; the recommended option applies ${due}` : ""}`,
+    itemOpened: "waits for an owner: a decision item is opened now",
+    asked: "asked before, and the item was closed without an answer; nothing happens until someone acts",
+    answered: (by) => `an owner's answer is applied now${by ? ` (@${by})` : ""}`,
+    dropped: (by) => `dropped by an owner${by ? ` (@${by})` : ""}`,
+    specProblem: (problem) => `not started, the spec has a problem: ${problem}`,
+    finished: "everything is merged; the issue is closed now",
+    reopened: "reopened, but every row is merged: nothing to do",
+    inProgress: (pr) => `in progress in PR #${pr}`,
+    blocked: (why) => `waits: ${why}`,
+    closedNotRedone: (pr, label) => `PR #${pr} was closed without merging; put the "${label}" label on the issue to have it redone`,
+    taken: (pr) => `taken by PR #${pr}, which is not the pipeline's`,
+    working: "the executor is working on it",
+    started: "the executor is dispatched now",
+    slot: (max) => `waits for a free slot (at most ${max} executor runs at a time)`,
+    budget: (reason) => `waits for the daily budget: ${reason}`,
+    cooling: (reason, until) => `waits: the agent cannot be used (${unavailableWhy(reason)}) until ${until}`,
+    probe: "waits: after a pause, one probe run goes first",
+    runsUnknown: "waits: the pipeline's runs could not be read this round",
+    unattributed: "waits: a run is starting that does not say yet what it works on",
+  },
   stale: {
     prGone: (n, merged) => `PR #${n} was ${merged ? "merged" : "closed"}`,
     prMissing: (n) => `PR #${n} is no longer open`,
@@ -462,7 +502,7 @@ export const PLAN_TEXT = {
     runsUnknown: (what) => `could not read the ${what} runs: no ${what} is dispatched this round`,
     ghost: (id, minutes) => `run ${id} has been queued for ${minutes} minutes without a job (a ghost run): ignored`,
     unattributed: (ids) => `nothing is dispatched this round: run ${ids.join(", ")} is queued or starting and does not say yet which issue it is for`,
-    cooling: (reason, until) => `the agent cannot be used right now (${reason}): nothing is dispatched until ${until}`,
+    cooling: (reason, until) => `the agent cannot be used right now (${unavailableWhy(reason)}): nothing is dispatched until ${until}`,
     probeWait: (ids) => `the cooldown is over; waiting for the probe run (${ids.join(", ")}) before dispatching more`,
     probe: "the cooldown is over; one probe run is dispatched first",
     probeOk: (id, minutes) => `probe run ${id} has been going for ${minutes} minutes: the agent works again`,
@@ -489,6 +529,24 @@ export const PLAN_TEXT = {
     reopened: (n) => `#${n} was reopened but every row of its PR split is merged: nothing to do (add rows or open a new issue)`,
     closedNotRedone: (n, pr, label) => `#${n} is not dispatched: PR #${pr} was closed without merging; put the "${label}" label on the issue to redo it`,
   },
+}
+
+// ---- cli/core/board.mjs ----
+// The status board issue.
+export const BOARD_TEXT = {
+  title: "Pipeline status",
+  summary: ({ mode, spent, cap, runs, maxRuns, running, parallel }) =>
+    `**Mode:** \`${mode}\` · **Today (UTC):** ${spent} of ${cap}, ${runs} agent run${runs === 1 ? "" : "s"}${maxRuns ? ` of ${maxRuns}` : ""} · **Executor runs going:** ${running} of ${parallel}`,
+  record: 'Mode "record": the pipeline writes code, opens pull requests and reviews them, but merges nothing and takes no decision by default.',
+  held: (why) => `Nothing new starts right now. ${why.charAt(0).toUpperCase()}${why.slice(1)}.`,
+  failures: (n) => `${n} step${n === 1 ? "" : "s"} of the last round failed; the run's log says which.`,
+  empty: (label) => `Nothing is in progress. Put the "${label}" label on an issue to hand it to the pipeline.`,
+  group: { person: "Needs a person", moving: "Moving", waiting: "Waiting", idle: "Nothing to do" },
+  col: { what: "What", status: "Where it is" },
+  pr: (pr, issue, row) => `PR #${pr}${issue ? ` (#${issue}${row ? ` row ${row}` : ""})` : ""}`,
+  issue: (issue, row) => `#${issue}${row ? ` row ${row}` : ""}`,
+  notes: (n) => `Notes from the round that wrote this (${n})`,
+  footer: (at, url) => `Written by the pipeline at ${at}${url ? ` ([run](${url}))` : ""}. It rewrites this issue when something changes; edits and comments here are not read.`,
 }
 
 // ---- cli/roles/tick.mjs ----
@@ -528,6 +586,11 @@ export const TICK_TEXT = {
     dispatchFix: (e) => `dispatch the executor for #${e.issue}${e.row ? ` row ${e.row}` : ""}`,
   },
   decideLabel: "A decision the pipeline needs from an owner",
+  boardLabel: "The pipeline's status board",
+  boardTitle: "Pipeline status",
+  board: (what) => `tick: status board ${what}`,
+  boardFailed: (error) => `could not be written: ${error}`,
+  boardUnreadable: (error) => `the status board could not be looked up (${error}); it is not written this round`,
 }
 
 // ---- cli/roles/fix.mjs ----
@@ -572,7 +635,7 @@ export const FIX_TEXT = {
   conflictMarkers: (files) => `the merge conflict was not resolved: conflict markers are still in ${files.join(", ")}`,
   conflictLost: (base, files) => `the merge would throw away changes from ${base} in ${files.join(", ")}; nothing was pushed`,
   setupFailed: (line) => `setup command failed: ${line}`,
-  unavailable: (reason) => `the agent cannot be used right now (${reason})`,
+  unavailable: (reason) => `the agent cannot be used right now (${unavailableWhy(reason)})`,
   noOutput: (rc, note) => `the agent gave no structured result (exit code ${rc}${note ? `; ${note}` : ""})`,
   badOutput: (problems) => `the agent's result does not match the schema: ${problems.slice(0, 5).join("; ")}`,
   noChanges: "the agent reported success but changed nothing",

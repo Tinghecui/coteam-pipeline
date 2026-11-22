@@ -1,6 +1,6 @@
 # Installing the pipeline by hand
 
-> **Status: `v0.2.0` is the current release, and it is young.** The engine has run end to
+> **Status: `v0.3.0` is the current release, and it is young.** The engine has run end to
 > end on a small demonstration repository, and the installer once from an empty start.
 > Expect corrections.
 
@@ -24,17 +24,19 @@ The rest of this page is the installation by hand, step by step. It should take 
 half an hour. At the end the pipeline runs in **record** mode: it writes code, opens pull
 requests and reviews them, but merges nothing.
 
-Everything runs in your own repository's GitHub Actions, with your own Anthropic API key and
-your own GitHub App. The engine has no server and its authors see nothing of yours.
+Everything runs in your own repository's GitHub Actions, with your own Anthropic API key (or
+Claude subscription) and your own GitHub App. The agent's job can run on GitHub's machines or
+on one of your own. The engine has no server and its authors see nothing of yours.
 
 You need:
 
 - a repository on GitHub where you are an admin, with GitHub Actions enabled;
 - tests that can be run with one command, and ideally a CI workflow that runs them on pull requests;
-- an Anthropic API key;
+- an Anthropic API key, or a Claude subscription (see
+  [Use a Claude subscription](#use-a-claude-subscription-instead-of-an-api-key));
 - the `gh` command line tool, logged in (`gh auth status`), for the commands below.
 
-In the commands, `ORG/REPO` is your repository, and `Tinghecui/coteam-pipeline@v0.2.0` stands
+In the commands, `ORG/REPO` is your repository, and `Tinghecui/coteam-pipeline@v0.3.0` stands
 for the engine repository and the release you install.
 
 ## 1. Create the GitHub App (the bot's identity)
@@ -84,7 +86,7 @@ even if you later install the App on more.
 
 ```sh
 gh secret set PIPELINE_APP_KEY --repo ORG/REPO < path/to/the-key.pem
-gh secret set ANTHROPIC_API_KEY --repo ORG/REPO          # paste the key when asked
+gh secret set ANTHROPIC_API_KEY --repo ORG/REPO          # paste the key when asked (or CLAUDE_CODE_OAUTH_TOKEN, see below)
 gh variable set PIPELINE_APP_ID --repo ORG/REPO --body 123456
 gh variable set PIPELINE_BOT --repo ORG/REPO --body "acme-pipeline[bot]"   # optional, see below
 ```
@@ -93,7 +95,9 @@ gh variable set PIPELINE_BOT --repo ORG/REPO --body "acme-pipeline[bot]"   # opt
 |---|---|---|
 | `PIPELINE_APP_KEY` | secret | The App's private key, the whole PEM file. |
 | `ANTHROPIC_API_KEY` | secret | Your Anthropic API key. It is the only credential the agent is given. Set a spend limit on it in the Anthropic console as a second brake. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret, instead of the key | A Claude subscription token, made with `claude setup-token`. Used when there is no `ANTHROPIC_API_KEY`. See [Use a Claude subscription](#use-a-claude-subscription-instead-of-an-api-key). |
 | `PIPELINE_APP_ID` | variable | The App ID from step 1. |
+| `PIPELINE_AGENT_RUNS_ON` | variable, optional | Where the agent's job runs. Empty or unset: GitHub's machines. See [Run the agent on your own machine](#run-the-agent-on-your-own-machine). |
 | `PIPELINE_BOT` | variable, optional | The login the App writes as: `<app-slug>[bot]`, where the slug is the last part of the App's public page, `github.com/apps/<app-slug>`. Used for one thing: `pipeline-tick.yml` skips the events caused by the bot's own comments and labels, which would otherwise each start a dispatcher round that finds nothing to do. |
 
 The pipeline keeps its state in hidden marks inside comments, and believes a mark only when
@@ -105,7 +109,7 @@ mistyped value costs some runner minutes and nothing else; the doctor compares i
 App's real login when it is run with the App's key (step 6).
 
 Do not store deploy keys, cloud credentials or package registry tokens under names the
-pipeline workflows read; they read only the four names above.
+pipeline workflows read; they read only the names above.
 
 ## 4. Copy the three workflows and the config
 
@@ -120,8 +124,8 @@ From the engine repository, at the release you install:
 
 Keep the file names: the engine starts the workflows by these names.
 
-In each workflow, replace `Tinghecui/coteam-pipeline` with the engine repository and `v0.2.0`
-with the release, in **both** places (`uses: ...@v0.2.0` and `engine_ref: v0.2.0`). The two
+In each workflow, replace `Tinghecui/coteam-pipeline` with the engine repository and `v0.3.0`
+with the release, in **both** places (`uses: ...@v0.3.0` and `engine_ref: v0.3.0`). The two
 must be equal: the first picks the workflow, the second the code it runs. Use a release tag
 or a full commit SHA, not a branch, so that the pipeline changes only when you change it.
 
@@ -160,6 +164,7 @@ gh label create 'pipeline:decide'   --repo ORG/REPO --color d93f0b --description
 gh label create 'pipeline:approved' --repo ORG/REPO --color 0e8a16 --description 'An owner released this pull request'
 gh label create 'pipeline:redo'     --repo ORG/REPO --color 5319e7 --description "Do the closed pull request's work again"
 gh label create 'pipeline:followup' --repo ORG/REPO --color c5def5 --description 'Noted in a review, not blocking'
+gh label create 'pipeline:board'    --repo ORG/REPO --color c2e0c6 --description "The pipeline's status board"
 gh label create 'level:0' --repo ORG/REPO --color 0e8a16 --description 'Risk level 0'
 gh label create 'level:1' --repo ORG/REPO --color fbca04 --description 'Risk level 1'
 gh label create 'level:2' --repo ORG/REPO --color d93f0b --description 'Risk level 2'
@@ -174,7 +179,7 @@ The doctor checks the installation and prints one line per check with what to do
 Run it on your machine, in a checkout of your repository, with a checkout of the engine next to it:
 
 ```sh
-git clone --depth 1 --branch v0.2.0 https://github.com/Tinghecui/coteam-pipeline ../coteam-pipeline
+git clone --depth 1 --branch v0.3.0 https://github.com/Tinghecui/coteam-pipeline ../coteam-pipeline
 GITHUB_REPOSITORY=ORG/REPO PIPELINE_TOKEN="$(gh auth token)" node ../coteam-pipeline/cli/main.mjs doctor
 ```
 
@@ -228,6 +233,14 @@ Within a minute of the label, **Actions** shows a `pipeline-tick` run, then
 
 Look at these before you trust it:
 
+- **The status board**: an issue titled "Pipeline status", opened by the bot after its
+  first round. It lists every open pipeline pull request and every work issue with one
+  line on where it is and what it waits for (an owner, CI, a free slot, the daily budget,
+  the agent's quota), and says at the top when nothing new can start and why. The tick
+  rewrites it whenever that changes; pin it if you like. The same text, without writing
+  anything, is printed by
+  `node ../coteam-pipeline/cli/main.mjs status --repo ORG/REPO` (it uses your `gh` login).
+  Set `board: false` in the config to have no board.
 - **The pull request's description**: is the summary true, and does the "not run or not
   verified" section admit what was not checked?
 - **The evidence**: the new test failing before the change and passing after it.
@@ -269,11 +282,85 @@ so "after 24 hours" can mean 24 hours and half an hour, occasionally an hour mor
 is lost when a round is dropped; the next one reads the whole state again. To run a round
 now, start `pipeline-tick` by hand from the Actions tab.
 
-**When the daily budget is used up** (`limits.daily_usd`), nothing new starts until
-midnight UTC. The pipeline says so once a day, in a comment on each issue or pull request
+**When the daily budget is used up** (`limits.daily_usd`, or `limits.daily_runs` if you set
+it), nothing new starts until midnight UTC. The pipeline says so once a day, in a comment on each issue or pull request
 that is waiting, so that waiting does not look like a pipeline that stopped.
 
 To stop everything at once, set `mode: off`, or disable the three workflows in the Actions tab.
+
+## Run the agent on your own machine
+
+The agent's job can run on a machine of yours instead of GitHub's: a Mac mini, a Linux box,
+a cloud VM, anything you can register as a GitHub Actions
+[self-hosted runner](https://docs.github.com/en/actions/hosting-your-own-runners). Only that
+one job moves. The jobs that hold the bot's key (the dispatcher, `prepare` and `publish`)
+always run on GitHub's machines, so your machine never sees the key; they take a minute or
+two each.
+
+1. Register a runner for the repository, as a user of its own that has nothing on it but
+   what the agent needs, and give it a label of its own, for example `pipeline`. Use that
+   label for no other workflow: the agent can change anything that user can, and a job of
+   another workflow on the same machine would run after it.
+2. Install Claude Code for that user and log in once (`claude`, then `/login`), or keep
+   using a secret (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`); a secret, when set,
+   is used instead of the machine's login. If `claude` is not on the runner's `PATH`, put
+   `PIPELINE_CLAUDE_BIN=/path/to/claude` in the runner's `.env` file. Node and git are
+   needed too.
+3. On that machine, as that user, run the machine check:
+
+   ```sh
+   git clone --depth 1 --branch v0.3.0 https://github.com/Tinghecui/coteam-pipeline ~/coteam-pipeline
+   node ~/coteam-pipeline/cli/main.mjs doctor --runner --try
+   ```
+
+   It fails when the CLI is missing or too old, when it is not logged in, or when this user
+   holds a GitHub credential the agent could pick up (`GH_TOKEN`, `~/.git-credentials`, a
+   `gh` login, a GitHub entry in `~/.netrc`, an extra git header). It warns about SSH keys,
+   git credential helpers and other credentials it finds (cloud, container, package
+   registries). It prints names and paths only, never what the files hold. `--try` asks
+   the CLI one tiny question, which is one request on your account.
+4. Point the agent's job at the runner:
+
+   ```sh
+   gh variable set PIPELINE_AGENT_RUNS_ON --repo ORG/REPO --body '["self-hosted", "pipeline"]'
+   ```
+
+   One label without brackets (`self-hosted`) works as well. To go back to GitHub's
+   machines, delete the variable.
+
+The engine refuses to run the agent on a self-hosted runner for a **public** repository,
+because the agent runs the repository's code and a self-hosted machine keeps what a job
+leaves behind. The run ends as "the agent is unavailable (runner)", nothing is charged to
+the issue, and the job's log says why. If you accept that risk, set
+`self_hosted: { allow_public: true }` in the config. The engine also refuses a Claude Code
+older than the one it was written for (the version it needs is in the log).
+
+A machine that is offline or busy holds the work: the job waits in GitHub's queue, and the
+status board shows the executor runs as going.
+
+GitHub announced in December 2025 a charge of $0.002 per minute for self-hosted runners and
+then postponed it. Its billing documentation listed self-hosted runners as free when this
+was written (November 2026). Check the current terms.
+
+## Use a Claude subscription instead of an API key
+
+The agent can run on a Claude subscription instead of an API key:
+
+- **On GitHub's machines**: make a long-lived token with `claude setup-token` (on your own
+  machine, logged in to the subscription) and store it as the secret
+  `CLAUDE_CODE_OAUTH_TOKEN`. Leave `ANTHROPIC_API_KEY` unset; when both are set, the API key
+  is used.
+- **On your own machine**: log the runner's Claude Code in to the subscription and set no
+  model secret at all (see above).
+
+A subscription has usage windows rather than a bill. When the window is used up the run
+ends as "the agent is unavailable (quota)" and the pipeline waits until the time Claude
+Code reports, then sends one run to try again; nothing is charged to the issue. The dollar
+figures in the ledger are what Claude Code reports for the run, which for a subscription is
+an estimate, not a charge. To cap how much the pipeline takes of your subscription, set
+`limits.daily_runs`, the number of agent runs a day (executor and reviewer together).
+
+Check that your subscription's terms allow this use.
 
 ## What runs where and what it can access
 
@@ -286,7 +373,7 @@ still runs each of them as one job. See "Known gaps" below for what that means.)
 |---|---|---|
 | Dispatcher (`pipeline-tick`) | A GitHub-hosted runner in your repository's Actions | The App key. No model key. Never runs the agent and never checks out a pull request's code. |
 | Executor and reviewer, job 1: `prepare` | Its own runner | The App key. No model key. Reads the issue and the pull request, decides whether the run may start, writes the work order (the prompt, the commits to start from). Runs the engine and git; nothing from your repository is executed. |
-| Executor and reviewer, job 2: the agent | Its own runner | The Anthropic key, and the workflow's built-in token limited to reading this repository's contents (that is how it fetches the code). **No App key**: this job has nothing it could push, comment or merge with. Runs `stack.setup`, the agent and `stack.check`. |
+| Executor and reviewer, job 2: the agent | Its own runner: GitHub's, or one of yours (`PIPELINE_AGENT_RUNS_ON`) | The model credential (the API key, the subscription token, or the login of your machine's Claude Code), and the workflow's built-in token limited to reading this repository's contents (that is how it fetches the code). **No App key**: this job has nothing it could push, comment or merge with. Runs `stack.setup`, the agent and `stack.check`. |
 | Executor and reviewer, job 3: `publish` | Its own runner | The App key. No model key. Takes what job 2 left, checks it, and writes to GitHub. Runs the engine and git; never the agent, never your code. |
 | The engine's code | Checked out from the engine repository at the ref you pinned | Nothing of its own. No server, no telemetry. |
 
@@ -355,7 +442,8 @@ engine at the ref you pinned, GitHub and Anthropic are trusted.
 1. The App's private key (`PIPELINE_APP_KEY`) and the tokens made from it. They can push
    to branches of this repository, comment, label, open, close and merge pull requests, set
    commit statuses (including the pipeline's own `pipeline/review`) and start workflows.
-2. The model key (`ANTHROPIC_API_KEY`).
+2. The model credential (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the login on a
+   machine of yours).
 3. The base branch: nothing should reach it that was not reviewed.
 
 **What is in place.**
@@ -422,13 +510,29 @@ engine at the ref you pinned, GitHub and Anthropic are trusted.
 - **`v0.1.0` does not have the three jobs.** There the agent runs in the same job and as
   the same OS user as the engine, which holds the App key in memory, and that user has
   passwordless `sudo`: an agent that digs for the key can get it. If you installed
-  `v0.1.0`, change `v0.1.0` to `v0.2.0` in your three workflow files (twice in each:
-  `uses: ...@` and `engine_ref`). Nothing else has to change.
-- **A self-hosted runner undoes the separation** if the three jobs land on the same
-  machine and that machine is not wiped between jobs. Use GitHub-hosted runners, or
-  ephemeral ones. (The lighter alternative to separate jobs, running the agent as a
-  separate unprivileged OS user on one machine, was not built: with passwordless `sudo`
-  on the hosted runners it would have protected nothing there.)
+  `v0.1.0`, upgrade (below).
+- **On a machine of your own, the agent sits next to everything its user can read**, and
+  the machine keeps what a run leaves behind: a later run of the agent can find what an
+  earlier, hostile one planted, and so can a job of any other workflow that uses the same
+  runner. The jobs that hold the bot's key never run there (the workflows pin them to
+  GitHub's machines), so the key stays out of reach. Give the runner a user and a label of
+  its own, keep credentials off it (`doctor --runner` looks for them), and prefer
+  [ephemeral runners](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/autoscaling-with-self-hosted-runners#using-ephemeral-runners-for-autoscaling).
+  The runner's own registration is readable by that user as well. (The lighter alternative
+  to separate jobs, running the agent as a separate unprivileged OS user on one machine,
+  was not built: with passwordless `sudo` on the hosted runners it would have protected
+  nothing there.)
+- **A subscription login on your machine is a credential the agent can use.** The agent
+  can spend your subscription's usage, and send its login elsewhere, the same way it can
+  the API key. `limits.daily_runs` caps what the pipeline itself starts.
+
+**Upgrading.** From `v0.1.0` or `v0.2.0`: change the version in your three workflow files
+(twice in each: `uses: ...@` and `engine_ref`). That is all `v0.3.0` needs; the first
+round then opens the status board (create the `pipeline:board` label first, or let the
+doctor's `--fix` do it; the tick creates it otherwise). To use a subscription token or a
+machine of your own, also copy the `agent_runs_on:` line and the `secrets:` block of
+`templates/workflows/pipeline-fix.yml` and `pipeline-review.yml` into yours; the doctor
+says when a caller does not pass what you have set.
 
 **What to do with this:**
 
@@ -440,18 +544,21 @@ engine at the ref you pinned, GitHub and Anthropic are trusted.
   by itself.)
 - Keep `mode: record` until you have watched the pipeline work, and do not add deploy
   keys, cloud credentials or production access to the pipeline's workflows.
-- If a run looks wrong, rotate the Anthropic key. The App key was not on that machine.
+- If a run looks wrong, rotate the Anthropic key (or log the machine's Claude Code out and
+  in again). The App key was not on that machine.
 
 ## Known limits of 0.1
 
 - **The code must be on GitHub**, and the repository must be allowed to run GitHub
-  Actions on GitHub-hosted runners. Tests and deployment can live anywhere.
+  Actions on GitHub-hosted runners: the jobs that hold the bot's key run there. Only the
+  agent's job can move to a machine of yours. Tests and deployment can live anywhere.
 - **Private dependency registries**: the agent cannot see registry tokens. Secrets are
   kept out of the agent's environment and out of `stack.setup`, so a private npm, PyPI or
   container registry cannot be reached by the commands the pipeline runs. If your project
   cannot install without one, 0.1 is not for it yet.
-- **Only Claude Code.** The executor and the reviewer are both the Claude Code CLI with
-  your Anthropic API key. No other agent or model vendor, and no second reviewer model.
+- **Only Claude Code.** The executor and the reviewer are both the Claude Code CLI, with
+  your Anthropic API key or your Claude subscription. No other agent or model vendor yet,
+  and no second reviewer model.
 - **English only.** Spec headings, labels, comments and prompts are English.
 - **No acceptance testing yet.** The pipeline stops at the merge. Nothing checks the
   deployed result against the acceptance criteria; that is planned for a later version.

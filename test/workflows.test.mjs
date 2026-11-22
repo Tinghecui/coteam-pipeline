@@ -88,8 +88,10 @@ test("the dispatcher never receives the model key", () => {
 test("the reusable workflows declare the secrets they use and nothing else", () => {
   for (const f of REUSABLE) {
     const used = [...new Set([...code(f.text).matchAll(/\$\{\{\s*secrets\.(\w+)\s*\}\}/g)].map((m) => m[1]))].sort()
-    assert.deepEqual(used, f.name === "tick" ? ["PIPELINE_APP_KEY"] : ["ANTHROPIC_API_KEY", "PIPELINE_APP_KEY"], f.path)
-    for (const s of used) assert.match(code(f.text), new RegExp(`^      ${s}:\\n(?:        description: .*\\n)?        required: true$`, "m"), `${f.path} ${s}`)
+    assert.deepEqual(used, f.name === "tick" ? ["PIPELINE_APP_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "PIPELINE_APP_KEY"], f.path)
+    // The bot's key is required; a model credential is not (a self-hosted runner can use its own CLI's login).
+    for (const s of used) assert.match(code(f.text), new RegExp(`^      ${s}:\\n(?:        description: .*\\n)?        required: ${s === "PIPELINE_APP_KEY"}$`, "m"), `${f.path} ${s}`)
+    if (f.name !== "tick") for (const s of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) for (const j of jobsOf(f.text)) assert.equal(code(j.text).includes(`secrets.${s}`), j.id === "agent", `${f.path} ${j.id} ${s}`)
     // The workflow's own token goes to one step only: the agent's, which fetches the code with it.
     assert.ok(!/GITHUB_TOKEN/.test(code(f.text)), f.path)
     assert.deepEqual(code(f.text).match(/.*github\.token.*/g) || [], f.name === "tick" ? [] : ["          PIPELINE_TOKEN: ${{ github.token }}"], f.path)
@@ -156,7 +158,9 @@ test("no event text is interpolated anywhere but the allowed places", () => {
   // checkout ref). In the callers the event is read in the job's `if:` only.
   for (const f of REUSABLE) {
     const uses = [...code(f.text).matchAll(/github\.event\.[\w.]+/g)].map((m) => m[0])
-    assert.deepEqual([...new Set(uses)], f.name === "tick" ? ["github.event.repository.default_branch"] : [], f.path)
+    assert.deepEqual([...new Set(uses)], f.name === "tick" ? ["github.event.repository.default_branch"] : ["github.event.repository.private"], f.path)
+    // ... and in the agent's job whether the repository is private, a boolean, through env: (cli/io/machine.mjs)
+    if (f.name !== "tick") assert.deepEqual(code(f.text).match(/.*github\.event\..*/g), ["          PIPELINE_REPO_PRIVATE: ${{ github.event.repository.private }}"], f.path)
     assert.ok(!/github\.(head_ref|ref_name)/.test(code(f.text)), f.path)
   }
   for (const f of CALLER) {
@@ -243,7 +247,9 @@ test("every job has a fixed timeout and a name the dispatcher can tell from the 
       assert.match(name, OWN_CHECK)
       assert.match(`pipeline / ${name}`, OWN_CHECK, "as GitHub shows a called job")
       minutes[j.id === "agent" || j.id === "tick" ? f.name : `${f.name}-${j.id}`] = Number(/^    timeout-minutes: (\d+)$/m.exec(j.text)?.[1])
-      assert.match(j.text, /^    runs-on: ubuntu-latest$/m, `${f.path} ${j.id}`)
+      // Only the agent's job may move to the team's own machine; the jobs that hold the bot's key never do.
+      if (j.id === "agent") assert.match(j.text, /^    runs-on: \$\{\{ startsWith\(inputs\.agent_runs_on, '\['\) && fromJSON\(inputs\.agent_runs_on\) \|\| inputs\.agent_runs_on \|\| 'ubuntu-latest' \}\}$/m, `${f.path} ${j.id}`)
+      else assert.match(j.text, /^    runs-on: ubuntu-latest$/m, `${f.path} ${j.id}`)
     }
     assert.ok(!OWN_CHECK.test("build / test"))
     assert.ok(!OWN_CHECK.test("build / pipeline-fix-tests"))
@@ -395,7 +401,7 @@ test("the starter config loads together with the preset it names, and explains e
     const m = /^\s*([a-z_0-9]+):/.exec(line)
     if (m) assert.match(lines[i - 1] || "", /^\s*#/, `templates/pipeline.yml: "${m[1]}" (line ${i + 1}) has no comment above it`)
   })
-  for (const key of ["version", "preset", "mode", "base", "owners", "stack", "setup", "test", "check", "ui_paths", "models", "risk", "forbidden", "level3", "level2", "level1", "merge", "method", "auto_max_level", "default_after_hours", "limits", "max_parallel", "max_rework", "issue_max_runs", "issue_max_usd", "daily_usd", "executor_minutes", "reviewer_minutes", "labels", "work", "decide", "approved", "redo", "followup", "level_prefix", "status_context", "branch_prefix"])
+  for (const key of ["version", "preset", "mode", "base", "owners", "stack", "setup", "test", "check", "ui_paths", "models", "risk", "forbidden", "level3", "level2", "level1", "merge", "method", "auto_max_level", "default_after_hours", "limits", "max_parallel", "max_rework", "issue_max_runs", "issue_max_usd", "daily_usd", "daily_runs", "executor_minutes", "reviewer_minutes", "labels", "work", "decide", "approved", "redo", "followup", "board", "self_hosted", "allow_public", "level_prefix", "status_context", "branch_prefix"])
     assert.match(text, new RegExp(`^\\s*(# )?${key}:`, "m"), `templates/pipeline.yml does not mention ${key}`)
 })
 
@@ -427,7 +433,7 @@ test("npm test runs every test file", () => {
 test("the README is in English, says what has not been verified and how to install, and its links exist", () => {
   const readme = readFileSync(join(ROOT, "README.md"), "utf8")
   assert.ok(!/[㐀-鿿]/.test(readme), "written for outside readers")
-  assert.match(readme, /The current release is `v0\.2\.0`/)
+  assert.match(readme, /The current release is `v0\.3\.0`/)
   assert.match(readme, /What has not been verified: a codebase of real size/)
   assert.match(readme, /\/plugin install coteam-pipeline@coteam-pipeline\n\/coteam-pipeline:init/)
   const links = [...readme.matchAll(/\]\(([^)#]+)(?:#[^)]*)?\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l))
@@ -459,4 +465,17 @@ test("the documents agree with the code about PIPELINE_BOT and about the agent's
   const fixSource = readFileSync(join(ROOT, "cli/roles/fix.mjs"), "utf8")
   const accepted = JSON.parse(/const AGENT_OUTCOMES = new Set\((\[[^\]]+\])\)/.exec(fixSource)[1])
   for (const o of accepted) assert.match(design.slice(design.indexOf("## Three jobs")), new RegExp(`\`${o}\``), o)
+})
+
+test("a self-hosted agent's job: the pinned CLI is installed on GitHub's machines only, and the engine is told where it runs", () => {
+  for (const f of REUSABLE.filter((x) => x.name !== "tick")) {
+    const agent = code(job(f, "agent"))
+    assert.match(agent, /- name: Install the Claude Code CLI\n {8}if: runner\.environment == 'github-hosted'\n/, f.path)
+    assert.match(agent, /^ {10}PIPELINE_RUNNER_ENVIRONMENT: \$\{\{ runner\.environment \}\}$/m, f.path)
+    assert.match(code(f.text), /^ {6}agent_runs_on:\n {8}description: .*\n {8}type: string\n {8}default: ""$/m, f.path)
+  }
+  for (const f of CALLER.filter((x) => x.reusable !== "tick")) {
+    assert.match(code(f.text), /^ {6}agent_runs_on: \$\{\{ vars\.PIPELINE_AGENT_RUNS_ON \}\}$/m, f.path)
+    assert.match(code(f.text), /^ {6}CLAUDE_CODE_OAUTH_TOKEN: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}$/m, f.path)
+  }
 })

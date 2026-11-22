@@ -82,7 +82,11 @@
 //     labels:         [{ on, remove, actions }]                       a one-time request label that has nothing left to do
 //     waiting:        [{ item, kind, pr | issue, due }]                open items nobody has answered yet
 //     notes:          [string]                                        why something was not done; for the job log
-//     running:        [run]   cooldown: core/ledger.mjs claudeCooldown | null   spentToday: number
+//     running:        [run]   cooldown: core/ledger.mjs claudeCooldown | null   spentToday: number   runsToday: number
+//     held:           why nothing new starts this round ("" = it may)
+//     board:          [{ pr?, issue, row, state, text, item? }]   where every piece of work is and what it waits for,
+//                     one entry per open pipeline PR and per work issue (core/board.mjs renders it)
+//                     state: working | queued | checks | owner | stuck | merging | idle
 //   }
 // An entry that follows from an answer (`item` set on a merge or a rework) must be skipped by
 // the role when applying that answer failed.
@@ -155,6 +159,9 @@ export function emptyPlan(mode) {
     running: [],
     cooldown: null,
     spentToday: 0,
+    runsToday: 0,
+    held: "",
+    board: [],
   }
 }
 
@@ -198,6 +205,10 @@ export function planTick(state, config, now = new Date()) {
   const note = (line) => {
     if (!plan.notes.includes(line)) plan.notes.push(line)
   }
+  // The status board: the last word on a piece of work wins.
+  const board = new Map()
+  const show = (key, entry) => board.set(key, entry)
+  const B = TEXT.board
 
   // ---- who and what is believed ----
   // Anyone who can comment can type a mark. When the pipeline's own login is known, a comment
@@ -283,6 +294,7 @@ export function planTick(state, config, now = new Date()) {
   // ---- today's spend ----
   const spend = budget(ledger, { issue: -1, limits: lim, now })
   plan.spentToday = spend.today
+  plan.runsToday = spend.runsToday || 0
   const overDaily = !spend.ok && !spend.capped
   if (overDaily) {
     slots = 0
@@ -482,6 +494,7 @@ export function planTick(state, config, now = new Date()) {
     if (why) {
       if (fixRunning) {
         out.notes.push(TEXT.note.fixRunning(`PR #${n}`))
+        out.show = { state: "working", text: B.reworking }
         return out
       }
       const rounds = reworks(cs).filter(after)
@@ -509,6 +522,7 @@ export function planTick(state, config, now = new Date()) {
           const until = skipUntil(skip)
           if (nowMs < until) {
             out.notes.push(TEXT.note.skipWait(`PR #${n}`, oneLine(skip.why, 60)))
+            out.show = { state: "queued", text: B.skipWait(oneLine(skip.why, 60), new Date(until).toISOString()) }
             return out
           }
           again = { send: rounds.filter((r) => r.sha === head).length + 1, skipped: oneLine(skip.why, 60) }
@@ -517,6 +531,7 @@ export function planTick(state, config, now = new Date()) {
           const lostAfter = lim.executor_minutes * 60000 + REWORK_LOST_GRACE_MS
           if (nowMs - ms(pending.at) <= lostAfter) {
             out.notes.push(TEXT.note.reworkPending(n))
+            out.show = { state: "working", text: B.reworkWaits(oneLine(why, 200)) }
             return out
           }
           out.want = { kind: "pr-release", cause: "rework-failed", sha: head, build: (extra) => prReleaseItem({ ...extra, ...base, cause: "rework-failed", review: reviewMark, reason: TEXT.reason.lost(pending.attempt || attempts, Math.round((nowMs - ms(pending.at)) / 60000), why) }) }
@@ -530,6 +545,7 @@ export function planTick(state, config, now = new Date()) {
       const claim = activeClaims(issueComments, { now })[0]
       if (claim) {
         out.notes.push(TEXT.note.claimed(issueNo, claim.run))
+        out.show = { state: "working", text: B.claimed(claim.run) }
         return out
       }
       // The executor refuses to start once its own allowance for the issue (or row) is used up;
@@ -549,11 +565,13 @@ export function planTick(state, config, now = new Date()) {
     if (!reviewed && st !== "success") {
       if (fixRunning) {
         out.notes.push(TEXT.note.fixRunning(`PR #${n}`))
+        out.show = { state: "working", text: B.reworking }
         return out
       }
       const mine = reviewRunsOf(n)
       if (mine.some((r) => r.status !== "completed" && !rev.ghosts.includes(r))) {
         out.notes.push(TEXT.note.reviewRunning(n))
+        out.show = { state: "working", text: B.reviewing }
         return out
       }
       const all = findMarks("review", cs)
@@ -592,13 +610,17 @@ export function planTick(state, config, now = new Date()) {
       // Approved (or released) with nothing left to ask: only the merge is still to come.
       out.settled = true
       if (m.ok) out.merge = { pr: n, sha: head, method: config.merge.method, issue: issueNo, row, level }
-      else out.notes.push(TEXT.note.notMerged(n, m.why))
+      else {
+        out.notes.push(TEXT.note.notMerged(n, m.why))
+        out.show = { state: "checks", text: B.notMerged(m.why) }
+      }
       return out
     }
     const verdict = reviewed?.verdict || ""
     // The comment says one thing, the status (which only the pipeline can set) another: believe the status and wait.
     if (verdict === "approve" && (st === "failure" || st === "error" || (!draft && level <= config.merge.auto_max_level))) {
       out.notes.push(TEXT.note.statusLag(n, { context, state: st }))
+      out.show = { state: "checks", text: B.statusLag }
       return out
     }
     if (!draft && verdict === "approve" && level < 3) {
@@ -679,9 +701,13 @@ export function planTick(state, config, now = new Date()) {
     }
     for (const line of res.notes) note(line)
     if (v) it = null
+    let shown = res.show || null
+    const asking = (number, due) => ({ state: "owner", text: B.item(number, due ? fmtTime(due) : ""), item: number })
     if (res.want && !v) {
-      if (it && sameAsk(it, res.want) && !it.outdated) plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: it.due })
-      else if (it && sameAsk(it, res.want)) {
+      if (it && sameAsk(it, res.want) && !it.outdated) {
+        plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: it.due })
+        shown = asking(it.number, it.due)
+      } else if (it && sameAsk(it, res.want)) {
         // The same kind of question about the new commit: the item is rewritten, not replaced.
         // The body first: it carries the new commit and since when the question stands, which
         // is what keeps this from being done twice and an old answer from being applied.
@@ -697,11 +723,17 @@ export function planTick(state, config, now = new Date()) {
           ],
         })
         plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: built.meta.due })
+        shown = asking(it.number, built.meta.due)
       } else {
         // The open item asks about something that is no longer the question: it goes, the new one comes.
         if (it) closeStale(it, TEXT.stale.changed(n))
-        if (askedBefore(res.want, n, lastDecision(pr.comments))) note(TEXT.note.asked(`PR #${n}`))
-        else openItem(res.want.build(), { pr: n, row: rowOf(pr) })
+        if (askedBefore(res.want, n, lastDecision(pr.comments))) {
+          note(TEXT.note.asked(`PR #${n}`))
+          shown = { state: "stuck", text: B.asked }
+        } else {
+          openItem(res.want.build(), { pr: n, row: rowOf(pr) })
+          shown = { state: "owner", text: B.itemOpened }
+        }
       }
     } else if (it && aboutChange(it) && inFlux(res)) plan.waiting.push({ item: it.number, kind: it.kind, pr: n, due: null, hold: true })
     else if (it) closeStale(it, TEXT.stale.notNeeded(n))
@@ -713,12 +745,17 @@ export function planTick(state, config, now = new Date()) {
     if (res.rework) reworkCands.push({ ...res.rework, ...tie })
     if (res.review) reviewCands.push(res.review)
     if (res.rework || res.review) held.push({ on: n, comments: pr.comments })
+    if (res.merge) shown = config.mode === "on" ? { state: "merging", text: B.merging(by === "review" ? "" : v?.by || "") } : { state: "idle", text: B.recordMerge }
+    else if (!shown && v) shown = { state: "working", text: B.answered(v.by) }
+    // A rework or a review that is due: where it stands is known once the slots are handed out.
+    show(`pr:${n}`, { pr: n, issue: issueOf(pr), row: rowOf(pr), ...(shown || { state: "idle", text: B.nothing }) })
   }
 
   // ---- work issues ----
   const fixCands = []
   for (const issue of [...issues].sort((a, b) => a.number - b.number)) {
     const n = issue.number
+    const shownAs = (state, text, row = 0, extra = {}) => show(`issue:${n}`, { issue: n, row, state, text, ...extra })
     let cs = issue.comments
     let it = openByIssue.get(n) || null
     let v = null
@@ -728,12 +765,16 @@ export function planTick(state, config, now = new Date()) {
       plan.applyAnswers.push(strip(entry))
       v = entry.virtual
       it = null
-      if (entry.effect === "drop") continue
+      if (entry.effect === "drop") {
+        shownAs("idle", B.dropped(entry.by))
+        continue
+      }
     }
     const spec = parseSpec(issue.body)
     if (spec.problems.length) {
       note(TEXT.note.specProblem(n, spec.problems[0]))
       if (it) plan.waiting.push({ item: it.number, kind: it.kind, issue: n, due: null })
+      shownAs("stuck", B.specProblem(spec.problems[0]))
       continue
     }
     const myOpen = prs.filter((p) => issueOf(p) === n)
@@ -771,18 +812,21 @@ export function planTick(state, config, now = new Date()) {
       if (prog.done) {
         if (issue.state_reason === "reopened" && !prog.unmarked.length) note(TEXT.note.reopened(n))
         else plan.closeIssues.push({ issue: n, rows: prog.merged, actions: [{ do: "closeIssue", issue: n, reason: "completed" }, { do: "comment", on: n, body: `${mark("finished", { rows: prog.merged.length })}\n${TEXT.comment.finished(prog.merged)}` }] })
+        shownAs(plan.closeIssues.some((c) => c.issue === n) ? "merging" : "idle", plan.closeIssues.some((c) => c.issue === n) ? B.finished : B.reopened)
         if (it) closeStale(it, TEXT.stale.issueNotNeeded(n))
         continue
       }
       const open = prog.open[0] || (myOpen[0] ? { row: rowOf(myOpen[0]), pr: myOpen[0].number, draft: Boolean(myOpen[0].draft) } : null)
       if (open) {
         note(TEXT.note.inProgress(n, open.row, open.pr, open.draft))
+        shownAs("working", B.inProgress(open.pr), open.row, { inPr: open.pr })
         if (it) closeStale(it, TEXT.stale.issueNotNeeded(n))
         continue
       }
       if (!prog.next) {
         note(TEXT.note.blocked(n, prog.blocked || TEXT.note.noRow))
         if (it) plan.waiting.push({ item: it.number, kind: it.kind, issue: n, due: null })
+        shownAs(it ? "owner" : "queued", it ? B.item(it.number, "") : B.blocked(prog.blocked || TEXT.note.noRow), 0, it ? { item: it.number } : {})
         continue
       }
       row = prog.next.n
@@ -792,6 +836,7 @@ export function planTick(state, config, now = new Date()) {
       const recorded = new Set(findMarks("row-done", cs).filter((m) => Number(m.row || 0) === 0).map((m) => Number(m.pr)))
       const merged = myClosed.filter((p) => p.merged_at && !rowOfBranch(p.head?.ref, prefix) && !recorded.has(p.number)).sort((x, y) => x.number - y.number).pop()
       if (merged) {
+        shownAs("merging", B.finished)
         plan.markRows.push({ issue: n, row: 0, pr: merged.number, kind: "done", redo: false, actions: [{ do: "comment", on: n, body: `${mark("row-done", { row: 0, pr: merged.number })}\n${TEXT.comment.taskDone(merged.number)}` }] })
         plan.closeIssues.push({ issue: n, rows: [{ row: 0, pr: merged.number }], actions: [{ do: "closeIssue", issue: n, reason: "completed" }, { do: "comment", on: n, body: `${mark("finished", { rows: 1 })}\n${TEXT.comment.finishedTask(merged.number)}` }] })
         if (it) closeStale(it, TEXT.stale.issueNotNeeded(n))
@@ -799,6 +844,7 @@ export function planTick(state, config, now = new Date()) {
       }
       if (myOpen.length) {
         note(TEXT.note.inProgress(n, 0, myOpen[0].number, Boolean(myOpen[0].draft)))
+        shownAs("working", B.inProgress(myOpen[0].number), 0, { inPr: myOpen[0].number })
         if (it) closeStale(it, TEXT.stale.issueNotNeeded(n))
         continue
       }
@@ -809,6 +855,7 @@ export function planTick(state, config, now = new Date()) {
         if (!gone.redo && !redoAsked) {
           note(TEXT.note.closedNotRedone(n, gone.pr, L.redo))
           if (it) plan.waiting.push({ item: it.number, kind: it.kind, issue: n, due: null })
+          shownAs("stuck", B.closedNotRedone(gone.pr, L.redo))
           continue
         }
       }
@@ -824,15 +871,18 @@ export function planTick(state, config, now = new Date()) {
     if (taken) {
       note(TEXT.note.taken(n, taken.number))
       if (it) plan.waiting.push({ item: it.number, kind: it.kind, issue: n, due: null })
+      shownAs("idle", B.taken(taken.number), row)
       continue
     }
     if (fixNumbers.has(n)) {
       note(TEXT.note.fixRunning(`#${n}`))
+      shownAs("working", B.working, row)
       continue
     }
     const claim = activeClaims(cs, { now })[0]
     if (claim) {
       note(TEXT.note.claimed(n, claim.run))
+      shownAs("working", B.claimed(claim.run), row)
       continue
     }
     const lastD = v || lastDecision(cs)
@@ -855,17 +905,25 @@ export function planTick(state, config, now = new Date()) {
     else if (gaveUp) want = { kind: "stuck", cause: "gave-up", row, reason: TEXT.reason.gaveUp }
     else if (skip?.permanent === true) want = { kind: "stuck", cause: "refused", row, reason: TEXT.reason.refused(oneLine(skip.why, 60)) }
     if (want) {
-      if (it && sameAsk(it, want)) plan.waiting.push({ item: it.number, kind: it.kind, issue: n, due: null })
-      else {
+      if (it && sameAsk(it, want)) {
+        plan.waiting.push({ item: it.number, kind: it.kind, issue: n, due: null })
+        shownAs("owner", B.item(it.number, ""), row, { item: it.number })
+      } else {
         if (it) closeStale(it, TEXT.stale.issueNotNeeded(n))
-        if (askedBefore(want, n, lastD)) note(TEXT.note.asked(`#${n}`))
-        else openItem(stuckItem({ issue, row, cause: want.cause, reason: want.reason, owners: ownerNames }), { issue: n, row })
+        if (askedBefore(want, n, lastD)) {
+          note(TEXT.note.asked(`#${n}`))
+          shownAs("stuck", B.asked, row)
+        } else {
+          openItem(stuckItem({ issue, row, cause: want.cause, reason: want.reason, owners: ownerNames }), { issue: n, row })
+          shownAs("owner", B.itemOpened, row)
+        }
       }
       continue
     }
     if (it) closeStale(it, TEXT.stale.issueNotNeeded(n))
     if (skip && nowMs < skipUntil(skip)) {
       note(TEXT.note.skipWait(`#${n}${row ? ` row ${row}` : ""}`, oneLine(skip.why, 60)))
+      shownAs("queued", B.skipWait(oneLine(skip.why, 60), new Date(skipUntil(skip)).toISOString()), row)
       continue
     }
     fixCands.push({ issue: n, row })
@@ -882,21 +940,40 @@ export function planTick(state, config, now = new Date()) {
       if (findMarks("budget-wait", h.comments).some((k) => k.day === day)) continue
       plan.notices.push({ on: h.on, day, actions: [{ do: "comment", on: h.on, body: `${mark("budget-wait", { day })}\n${TEXT.comment.budgetWait(spend.reason)}` }] })
     }
+  // Why nothing new starts this round, for the board ("" = things may start).
+  const heldWhy = (forReview) =>
+    overDaily
+      ? B.budget(spend.reason)
+      : cool?.cooling
+        ? B.cooling(cool.reason, cool.until)
+        : (forReview ? !reviewKnown : !fixKnown)
+          ? B.runsUnknown
+          : (forReview ? rev.unknown.length : fix.unknown.length)
+            ? B.unattributed
+            : cool && slots <= 0
+              ? B.probe
+              : ""
+  plan.held = heldWhy(false)
+  const prEntry = (n) => board.get(`pr:${n}`) || { pr: n }
   for (const r of reviewCands) {
     if (!reviewsOk) {
       if (!overDaily) note(TEXT.note.reviewBlocked(r.pr))
+      show(`pr:${r.pr}`, { ...prEntry(r.pr), state: "queued", text: B.reviewHeld(heldWhy(true) || B.probe) })
       continue
     }
     plan.dispatchReview.push({ ...r, actions: [{ do: "dispatch", workflow: REVIEW_WORKFLOW, inputs: { pr: String(r.pr) } }] })
+    show(`pr:${r.pr}`, { ...prEntry(r.pr), state: "working", text: B.reviewSent(r.attempt) })
   }
   const full = !overDaily && !cool?.cooling && fixKnown && !fix.unknown.length
   // Reworks first: the PR is already open, and the longer it waits the likelier it conflicts.
   for (const r of reworkCands) {
     if (slots <= 0) {
       if (full) note(TEXT.note.queued(`the rework of PR #${r.pr}`, lim.max_parallel))
+      show(`pr:${r.pr}`, { ...prEntry(r.pr), state: "queued", text: B.reworkHeld(oneLine(r.why, 200), full ? B.slot(lim.max_parallel) : heldWhy(false) || B.slot(lim.max_parallel)) })
       continue
     }
     slots -= 1
+    show(`pr:${r.pr}`, { ...prEntry(r.pr), state: "working", text: B.reworkSent(r.attempt, lim.max_rework, oneLine(r.why, 200)) })
     plan.dispatchRework.push({
       ...r,
       actions: [
@@ -913,10 +990,13 @@ export function planTick(state, config, now = new Date()) {
   for (const c of fixCands) {
     if (slots <= 0) {
       if (full) note(TEXT.note.queued(`#${c.issue}${c.row ? ` row ${c.row}` : ""}`, lim.max_parallel))
+      show(`issue:${c.issue}`, { issue: c.issue, row: c.row, state: "queued", text: full ? B.slot(lim.max_parallel) : heldWhy(false) || B.slot(lim.max_parallel) })
       continue
     }
     slots -= 1
+    show(`issue:${c.issue}`, { issue: c.issue, row: c.row, state: "working", text: B.started })
     plan.dispatchFix.push({ ...c, actions: [{ do: "dispatch", workflow: FIX_WORKFLOW, inputs: { issue: String(c.issue), row: c.row ? String(c.row) : "", pr: "" } }] })
   }
+  plan.board = [...board.values()].sort((a, b) => (a.pr ? 0 : 1) - (b.pr ? 0 : 1) || (a.pr || a.issue) - (b.pr || b.issue))
   return plan
 }

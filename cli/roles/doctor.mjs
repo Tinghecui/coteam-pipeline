@@ -26,9 +26,13 @@ export const CALLERS = [
 export { OWN_CHECK }
 // What the bot token must be allowed to do, as GitHub names the permissions of an App.
 export const NEEDED = { contents: "write", issues: "write", pull_requests: "write", statuses: "write", actions: "write", checks: "read" }
-export const SECRETS = ["PIPELINE_APP_KEY", "ANTHROPIC_API_KEY"]
+export const SECRETS = ["PIPELINE_APP_KEY"]
+// The agent's credential: one of these, or (when the agent's job runs on a machine of the
+// team's own) that machine's own login.
+export const MODEL_SECRETS = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
 export const VARIABLES = ["PIPELINE_APP_ID"]
 export const BOT_VARIABLE = "PIPELINE_BOT"
+export const RUNS_ON_VARIABLE = "PIPELINE_AGENT_RUNS_ON"
 // The ceilings of the CI jobs (.github/workflows/fix.yml, review.yml) less room for setup and checks.
 export const MAX_EXECUTOR_MINUTES = 240
 export const MAX_REVIEWER_MINUTES = 45
@@ -67,6 +71,7 @@ export const TEXT = {
       approved: "An owner released this pull request",
       redo: "Do the closed pull request's work again",
       followup: "Noted in a review, not blocking",
+      board: "The pipeline's status board",
       level: (n) => `Risk level ${n}`,
     },
   },
@@ -91,7 +96,7 @@ export const TEXT = {
     extraTrigger: (file, trigger) => `${file} is also started by "${trigger}": it must be started by workflow_dispatch only`,
     extraTriggerHint: "Remove the other triggers. Only the dispatcher (or a person, from the Actions tab) starts it, with the number of the issue or pull request as input; an event cannot supply that, and a pull request event from a fork would run it on a stranger's say-so.",
     floating: (ref) => `the engine ref "${ref}" is a branch, not a release tag or a commit: the pipeline changes whenever that branch does`,
-    floatingHint: "Use a release tag (v0.2.0) or a full commit SHA.",
+    floatingHint: "Use a release tag (v0.3.0) or a full commit SHA.",
   },
   settings: {
     ok: (kind, names) => `${kind} present: ${names.join(", ")}`,
@@ -107,6 +112,27 @@ export const TEXT = {
     noBotHint: (repo, login) => `Harmless, but it uses runner minutes. To skip those rounds: gh variable set PIPELINE_BOT --repo ${repo} --body "${login || "<app-slug>[bot]"}"`,
     otherBot: (value, login) => `the variable PIPELINE_BOT is "${value}", but the App writes as "${login}": the dispatcher does not skip the events its own bot causes`,
     otherBotHint: (repo, login) => `gh variable set PIPELINE_BOT --repo ${repo} --body "${login}"`,
+  },
+  model: {
+    ok: (names) => `the agent's credential: ${names.join(" and ")}${names.length > 1 ? " (the API key is the one used)" : ""}`,
+    machine: (where) => `no model secret: the agent's job runs on ${where} and uses the login of that machine's own Claude Code`,
+    machineHint: "Check that machine with the doctor's --runner mode, run there as the runner's user (docs/install.md, \"Run the agent on your own machine\").",
+    missing: "the agent has no credential: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is set, and the agent's job runs on GitHub's machines",
+    missingHint: (repo) => [`An API key: gh secret set ANTHROPIC_API_KEY --repo ${repo}`, `Or a Claude subscription: run \`claude setup-token\`, then gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${repo}`],
+    cannot: "the agent's credential: cannot check (this token may not list secrets)",
+    cannotHint: `Look in Settings > Secrets and variables > Actions for ${MODEL_SECRETS.join(" or ")}.`,
+    notPassed: (file, name) => `the secret ${name} is set but ${file} does not pass it to the engine (a caller from before v0.3.0)`,
+    notPassedHint: (file) => `Copy the secrets: block from templates/workflows/${file}.`,
+  },
+  runsOn: {
+    badJson: (value) => `the variable PIPELINE_AGENT_RUNS_ON is "${value}": a value that starts with "[" must be a JSON list of labels, e.g. ["self-hosted", "pipeline"]`,
+    badJsonHint: "Fix the value, or set one label without brackets (self-hosted).",
+    public: (where) => `the agent's job is set to run on ${where}, but the repository is public: the engine refuses a self-hosted runner for a public repository`,
+    publicHint: "Leave PIPELINE_AGENT_RUNS_ON empty (GitHub's machines), make the repository private, or, accepting the risk, set self_hosted.allow_public: true.",
+    on: (where) => `the agent's job runs on ${where} (the two jobs that hold the bot's key stay on GitHub's machines)`,
+    onHint: "Run the doctor's --runner mode on that machine as the runner's user. Give the runner a label of its own and use it for nothing else.",
+    notPassed: (file) => `the variable PIPELINE_AGENT_RUNS_ON is set but ${file} does not pass it (a caller from before v0.3.0): the agent still runs on GitHub's machines`,
+    notPassedHint: (file) => `Copy the agent_runs_on: line from templates/workflows/${file}.`,
   },
   bot: {
     known: (login) => `the token in use writes as ${login} (the pipeline believes only marks written by its own login)`,
@@ -165,6 +191,7 @@ export function neededLabels(config) {
     { name: L.approved, color: "0e8a16", description: D.approved },
     { name: L.redo, color: "5319e7", description: D.redo },
     { name: L.followup, color: "c5def5", description: D.followup },
+    { name: L.board, color: "c2e0c6", description: D.board },
     ...[0, 1, 2, 3].map((n) => ({ name: `${L.level_prefix}${n}`, color: LEVEL_COLORS[n], description: D.level(n) })),
   ]
 }
@@ -172,7 +199,8 @@ export function neededLabels(config) {
 export const labelCommand = (repo, l) => `gh label create ${shq(l.name)} --repo ${repo} --color ${l.color} --description ${shq(l.description)}`
 
 // What a caller workflow says about the engine it runs.
-// -> { uses: { repo, reusable, ref } | null, engineRef, inherit, runName, dispatch, triggers: [name] }
+// -> { uses: { repo, reusable, ref } | null, engineRef, inherit, runName, dispatch, triggers: [name],
+//      secrets: [the secrets it passes], runsOn: does it pass agent_runs_on }
 export function parseCaller(text) {
   const t = uncommented(text)
   const u = /^\s*uses:\s*["']?([\w.-]+\/[\w.-]+)\/\.github\/workflows\/([\w-]+)\.ya?ml@([^\s"'#]+)/m.exec(t)
@@ -197,6 +225,8 @@ export function parseCaller(text) {
     }
   }
   return {
+    secrets: [...new Set([...t.matchAll(/\$\{\{\s*secrets\.(\w+)\s*\}\}/g)].map((m) => m[1]))],
+    runsOn: /^\s*agent_runs_on:/m.test(t),
     uses: u ? { repo: u[1], reusable: u[2], ref: u[3] } : null,
     engineRef: ref ? ref[1] : "",
     inherit: /^\s*secrets:\s*["']?inherit\b/m.test(t),
@@ -272,6 +302,7 @@ export async function run(opts, io) {
 
   // ---- the three caller workflows on the base branch ----
   const engines = []
+  const parsed = []
   let callersOk = true
   for (const c of CALLERS) {
     const bad = (state, text, hint) => {
@@ -294,6 +325,7 @@ export async function run(opts, io) {
       continue
     }
     engines.push({ file: c.file, repo: p.uses.repo, ref: p.uses.ref })
+    parsed.push({ ...c, ...p })
     if (/^OWNER\//.test(p.uses.repo)) bad("FAIL", TEXT.callers.placeholder(c.file), TEXT.callers.placeholderHint)
     if (p.engineRef !== p.uses.ref) bad("FAIL", TEXT.callers.refMismatch(c.file, p.uses.ref, p.engineRef), TEXT.callers.refMismatchHint)
     if (p.inherit) bad("warn", TEXT.callers.inherit(c.file), TEXT.callers.inheritHint)
@@ -318,6 +350,7 @@ export async function run(opts, io) {
 
   // ---- secrets and variables: names only ----
   let botValue = null
+  let runsOnValue = null
   const listNames = async (paths, key) => {
     const names = new Set()
     let readable = false
@@ -329,6 +362,7 @@ export async function run(opts, io) {
         names.add(x.name)
         // A variable's value comes with the list (a secret's never does).
         if (key === "variables" && x.name === BOT_VARIABLE && typeof x.value === "string") botValue ??= x.value
+        if (key === "variables" && x.name === RUNS_ON_VARIABLE && typeof x.value === "string") runsOnValue ??= x.value
       }
     }
     return readable ? names : null
@@ -343,6 +377,18 @@ export async function run(opts, io) {
   presence("secrets", "secrets", SECRETS, secrets, TEXT.settings.secretHint)
   const variables = await listNames(["actions/variables?per_page=100", "actions/organization-variables?per_page=100"], "variables")
   presence("variables", "variables", VARIABLES, variables, TEXT.settings.variableHint)
+
+  // ---- the agent's credential, and where its job runs ----
+  const where = String(runsOnValue || "").trim()
+  const agents = parsed.filter((c) => c.reusable !== "tick")
+  if (!secrets) add("secrets.model", "skip", TEXT.model.cannot, TEXT.model.cannotHint)
+  else {
+    const have = MODEL_SECRETS.filter((n) => secrets.has(n))
+    if (have.length) add("secrets.model", "ok", TEXT.model.ok(have))
+    else if (where) add("secrets.model", "info", TEXT.model.machine(where), TEXT.model.machineHint)
+    else add("secrets.model", "FAIL", TEXT.model.missing, TEXT.model.missingHint(repo))
+    for (const c of agents) for (const n of have) if (!c.secrets.includes(n)) add(`workflow.${c.reusable}.secret`, "warn", TEXT.model.notPassed(c.file, n), TEXT.model.notPassedHint(c.file))
+  }
 
   // ---- the pipeline's own login, and the optional PIPELINE_BOT variable ----
   const perms = io.tokenPermissions && typeof io.tokenPermissions === "object" ? io.tokenPermissions : null
@@ -388,6 +434,21 @@ export async function run(opts, io) {
     if (info.value.permissions.push) add("write", "ok", A.userPush)
     else add("write", "FAIL", A.userNoPush)
   } else add("write", "skip", A.cannotWrite, A.cannotWriteHint)
+  if (where) {
+    let ok = true
+    if (where.startsWith("[")) {
+      try {
+        const v = JSON.parse(where)
+        ok = Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x.trim())
+      } catch {
+        ok = false
+      }
+    }
+    if (!ok) add("runs_on", "FAIL", TEXT.runsOn.badJson(where), TEXT.runsOn.badJsonHint)
+    else if (info.ok && info.value?.private === false && !config.self_hosted?.allow_public) add("runs_on", "FAIL", TEXT.runsOn.public(where), TEXT.runsOn.publicHint)
+    else add("runs_on", "info", TEXT.runsOn.on(where), TEXT.runsOn.onHint)
+    for (const c of agents) if (!c.runsOn) add(`workflow.${c.reusable}.runs_on`, "warn", TEXT.runsOn.notPassed(c.file), TEXT.runsOn.notPassedHint(c.file))
+  }
   if (info.ok) {
     const allowed = { squash: info.value?.allow_squash_merge, merge: info.value?.allow_merge_commit, rebase: info.value?.allow_rebase_merge }[config.merge.method]
     if (allowed === false) add("merge.method", "FAIL", A.mergeMethod(config.merge.method), A.mergeMethodHint)

@@ -41,7 +41,7 @@ export function openOrder(text, sha256, role) {
   return order
 }
 
-const UNAVAILABLE = ["quota", "overloaded", "auth", "not_started"]
+const UNAVAILABLE = ["quota", "overloaded", "auth", "not_started", "runner"]
 const text = (v, max) => (typeof v === "string" ? v.slice(0, max) : "")
 
 // The usage figures of a result, as far as they can be believed: numbers that are numbers,

@@ -1142,7 +1142,7 @@ test("work that waits for the daily budget says so where an owner looks, once a 
   const day = now.toISOString().slice(0, 10)
   const body = p.notices[2].actions[0].body
   assert.ok(body.startsWith(`<!-- pipeline-budget-wait {"day":"${day}"} -->\nWaiting for the daily budget: $30.00 spent today (UTC ${day}), the daily limit is $30.00.`), body)
-  assert.match(body, /starts by itself after midnight UTC.*raise `limits\.daily_usd`/)
+  assert.match(body, /starts by itself after midnight UTC.*raise the limit named here \(`limits\.daily_usd` or `limits\.daily_runs`\)/)
   // said already today: not again; said yesterday: again
   const told = (d) => m("budget-wait", { day: d })
   const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10)
@@ -1154,4 +1154,74 @@ test("work that waits for the daily budget says so where an owner looks, once a 
   // a mark typed by someone else does not silence it
   const forged = plan({ issues: [issue(3, { comments: [c(mark("budget-wait", { day }), { by: "mallory" })] })], ledger: spent }, config)
   assert.deepEqual(forged.notices.map((x) => x.on), [3])
+})
+
+// ---------- the status board ----------
+
+const boardOf = (p) => Object.fromEntries(p.board.map((e) => [e.pr ? `PR #${e.pr}` : `#${e.issue}${e.row ? ` row ${e.row}` : ""}`, [e.state, e.text]]))
+
+test("board: every open pipeline PR and every work issue has one line saying where it is", () => {
+  const level2 = reviewed(43, "pipeline/5-y", "h43", "approve", 2)
+  const p = plan({
+    issues: [issue(1), issue(2), issue(3), issue(4), issue(5), issue(6)],
+    prs: [
+      reviewed(40, "pipeline/2-ok", "h40", "approve", 0),
+      reviewed(41, "pipeline/3-bad", "h41", "reject", 0),
+      pr(42, "pipeline/4-new", "h42"),
+      level2,
+      reviewed(44, "pipeline/6-ci", "h44", "approve", 0, { checkRuns: [{ name: "unit", status: "in_progress", conclusion: null }] }),
+    ],
+    items: [askItem(900, level2)],
+  })
+  const b = boardOf(p)
+  assert.deepEqual(b["PR #40"], ["merging", "approved; merged now"])
+  assert.deepEqual(b["PR #41"][0], "working")
+  assert.match(b["PR #41"][1], /^sent back to the executor now \(rework 1 of at most 4\): the reviewer rejected it/)
+  assert.deepEqual(b["PR #42"], ["working", "the review is dispatched now"])
+  assert.deepEqual(b["PR #43"][0], "owner")
+  assert.match(b["PR #43"][1], /^waits for an owner: decision item #900; the recommended option applies /)
+  assert.deepEqual(b["PR #44"], ["checks", 'approved; not merged yet: check "unit" has not finished'])
+  // issues with a PR point at it; the one without is dispatched
+  assert.deepEqual(b["#2"], ["working", "in progress in PR #40"])
+  assert.deepEqual(b["#1"], ["working", "the executor is dispatched now"])
+  // PRs first, then issues, each by number
+  assert.deepEqual(p.board.map((e) => e.pr || `#${e.issue}`), [40, 41, 42, 43, 44, "#1", "#2", "#3", "#4", "#5", "#6"])
+  assert.equal(p.board.find((e) => !e.pr && e.issue === 2).inPr, 40)
+  assert.equal(p.held, "")
+})
+
+test("board: what holds work back is said on the line and once for the round", () => {
+  // no free slot: the rework takes the only one, the new work waits for it
+  const slots = plan({ issues: [issue(1), issue(2)], prs: [reviewed(48, "pipeline/8-x", "h", "reject", 0)], runs: { fix: [run(7, "fix #77")], review: [] } })
+  assert.deepEqual(boardOf(slots)["#1"], ["queued", "waits for a free slot (at most 2 executor runs at a time)"])
+  assert.equal(slots.held, "")
+  // the daily budget: everything new waits, and the reason is the budget's
+  const broke = plan({ issues: [issue(1)], prs: [pr(40, "pipeline/2-x", "h")], ledger: [{ at: ago(60), role: "reviewer", pr: 9, usd: 31, turns: 5, outcome: "approve" }] })
+  assert.match(broke.held, /^waits for the daily budget: \$31\.00 spent today/)
+  assert.deepEqual(boardOf(broke)["#1"][0], "queued")
+  assert.match(boardOf(broke)["#1"][1], /daily budget/)
+  assert.match(boardOf(broke)["PR #40"][1], /^needs a review; waits for the daily budget/)
+  // the agent cannot be used: the board says until when
+  const un = { at: ago(10), role: "executor", issue: 1, turns: 0, usd: 0, outcome: "unavailable", unavailable: "runner" }
+  const cool = plan({ issues: [issue(1)], ledger: [un] })
+  assert.match(cool.held, /^waits: the agent cannot be used \(runner: the agent's machine refused to run it, the agent job's log says why\) until 2026-11-16T04:20:00Z/)
+  // limits.daily_runs: counted from the ledger, and a stop of its own
+  const runs = [1, 2, 3].map((i) => ({ at: ago(30 + i), role: i === 3 ? "reviewer" : "executor", issue: 9, usd: 0, turns: 4, outcome: "pr" }))
+  const capped = plan({ issues: [issue(1)], ledger: runs }, cfg({ limits: { daily_runs: 3 } }))
+  assert.deepEqual([fixes(capped), capped.runsToday], [[], 3])
+  assert.match(capped.held, /the agents have run 3 times today \(UTC 2026-11-16\), the daily limit is 3 \(limits\.daily_runs\)/)
+  assert.deepEqual(fixes(plan({ issues: [issue(1)], ledger: runs }, cfg({ limits: { daily_runs: 4 } }))), [[1, 0]])
+  // 0 = no limit on the count
+  assert.deepEqual(fixes(plan({ issues: [issue(1)], ledger: runs })), [[1, 0]])
+})
+
+test("board: work that needs a person says so", () => {
+  const closedOne = plan({ issues: [issue(5)], closedPrs: [closed(30, "pipeline/5-x")] })
+  assert.deepEqual(boardOf(closedOne)["#5"], ["stuck", 'PR #30 was closed without merging; put the "pipeline:redo" label on the issue to have it redone'])
+  const broken = plan({ issues: [issue(8, { body: "## PR split\n\nno table" })] })
+  assert.equal(boardOf(broken)["#8"][0], "stuck")
+  const capped = plan({ issues: [issue(3)], ledger: [1, 2, 3, 4, 5].map((i) => entry(3, 100 + i)) })
+  assert.deepEqual(boardOf(capped)["#3"], ["owner", "waits for an owner: a decision item is opened now"])
+  const record = plan({ prs: [reviewed(40, "pipeline/2-ok", "h40", "approve", 0)] }, cfg({ mode: "record" }))
+  assert.deepEqual(boardOf(record)["PR #40"], ["idle", 'approved; would be merged now, but mode is "record"'])
 })

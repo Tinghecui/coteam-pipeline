@@ -9,7 +9,8 @@
 #   - `prepare` and `publish` hold the bot's key. Neither may ever run the agent, install the
 #     agent's CLI, or run anything from the repository's checkout (no setup command, no
 #     test, no script, no action from the repository). They run the engine and git, nothing else.
-#   - `agent` runs the agent and the repository's own code. It must never be given the bot's
+#   - `agent` runs the agent and the repository's own code, on GitHub's machines or on the
+#     team's own (agent_runs_on). It must never be given the bot's
 #     key: PIPELINE_APP_KEY may not appear in that job. It gets the model key, and the
 #     workflow's own token, which this file limits to reading the repository's contents
 #     (that is how it fetches the code; it can write nowhere).
@@ -53,9 +54,13 @@ on:
         type: string
         default: ""
       claude_code_version:
-        description: "The exact version of the Claude Code CLI (@anthropic-ai/claude-code) to install. Pinned: the engine is tested against this one."
+        description: "The exact version of the Claude Code CLI (@anthropic-ai/claude-code) to install on GitHub's machines. Pinned: the engine is tested against this one. A self-hosted runner uses its own CLI (at least the engine's MIN_CLAUDE, cli/io/machine.mjs)."
         type: string
         default: "2.1.302"
+      agent_runs_on:
+        description: "Where the agent's job runs (repository variable PIPELINE_AGENT_RUNS_ON): empty for GitHub's machines (ubuntu-latest), one runner label (self-hosted), or a JSON list of labels ([\"self-hosted\", \"pipeline\"]). Only the agent's job moves; the two jobs that hold the bot's key always run on GitHub's machines."
+        type: string
+        default: ""
       pr:
         description: "Pull request number."
         type: string
@@ -69,8 +74,11 @@ on:
         description: "The private key (PEM) of the GitHub App. Given to the prepare and publish jobs, never to the agent's."
         required: true
       ANTHROPIC_API_KEY:
-        description: "The team's own Anthropic API key. Given to the agent's job only."
-        required: true
+        description: "The team's own Anthropic API key. Given to the agent's job only. Optional: without it, CLAUDE_CODE_OAUTH_TOKEN, or (on a self-hosted runner) the login of the runner's own CLI is used."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: "A Claude subscription token (claude setup-token). Given to the agent's job only. Used when there is no ANTHROPIC_API_KEY."
+        required: false
 
 # The workflow's own token may read the repository's contents, nothing else. The verdict is
 # written by the engine with the bot token.
@@ -142,7 +150,9 @@ jobs:
     name: pipeline-review
     needs: prepare
     if: needs.prepare.outputs.go == 'true'
-    runs-on: ubuntu-latest
+    # The one job that may move to a machine of the team's own (agent_runs_on). It holds no
+    # key that can write to GitHub, so a machine it runs on learns nothing that lets it.
+    runs-on: ${{ startsWith(inputs.agent_runs_on, '[') && fromJSON(inputs.agent_runs_on) || inputs.agent_runs_on || 'ubuntu-latest' }}
     # A fixed ceiling, not the working limit: the engine stops the agent after
     # limits.reviewer_minutes (default 20).
     timeout-minutes: 60
@@ -168,6 +178,9 @@ jobs:
         with:
           node-version: 22
       - name: Install the Claude Code CLI
+        # On GitHub's machines only. A self-hosted runner keeps its own CLI and its login;
+        # the engine checks its version before the agent starts.
+        if: runner.environment == 'github-hosted'
         env:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
         run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
@@ -183,6 +196,11 @@ jobs:
           # (see `permissions` above). The bot's key is not in this job.
           PIPELINE_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Where this job runs and whether the repository is private: a self-hosted runner
+          # for a public repository is refused (cli/io/machine.mjs).
+          PIPELINE_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          PIPELINE_REPO_PRIVATE: ${{ github.event.repository.private }}
         run: node "$GITHUB_WORKSPACE/engine/cli/main.mjs" review agent --order="$RUNNER_TEMP/pipeline-order" --result="$RUNNER_TEMP/pipeline-result"
       - name: Hand the result on
         if: always()

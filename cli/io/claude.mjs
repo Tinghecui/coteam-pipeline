@@ -27,7 +27,9 @@ const FIXED_ENV = { DISABLE_AUTOUPDATER: "1", BASH_DEFAULT_TIMEOUT_MS: "1800000"
 export function agentEnv(env, extra = FIXED_ENV) {
   const out = {}
   for (const [k, v] of Object.entries(env || {})) {
-    if (v === undefined || v === null) continue
+    // A secret the workflow passes but the repository does not have arrives as "": the CLI
+    // must not take an empty API key for the credential it should use.
+    if (v === undefined || v === null || (MODEL_ENV.test(k) && v === "")) continue
     if (STRIP_PREFIX.test(k)) continue
     if (SECRET_NAME.test(k) && !MODEL_ENV.test(k)) continue
     out[k] = String(v)

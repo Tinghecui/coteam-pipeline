@@ -81,7 +81,7 @@ test("a complete installation passes, with nothing written", async () => {
   assert.deepEqual(f.calls, [], "the doctor only reads")
   assert.equal(one(res, "config").state, "ok")
   assert.equal(one(res, "labels").state, "ok")
-  assert.equal(one(res, "workflow.engine").text, TEXT.callers.ok("main", "engine-org/coteam-pipeline", "v0.2.0"))
+  assert.equal(one(res, "workflow.engine").text, TEXT.callers.ok("main", "engine-org/coteam-pipeline", "v0.3.0"))
   assert.equal(one(res, "secrets").state, "ok")
   assert.equal(one(res, "variables").state, "ok")
   assert.equal(one(res, "write").state, "ok")
@@ -138,7 +138,7 @@ test("missing labels: the exact gh lines are offered, nothing is created without
   // "Pipeline" counts as "pipeline": GitHub compares label names without case
   assert.ok(!r.text.includes("pipeline,"), r.text)
   const lines = r.hint.split("\n")
-  assert.equal(lines.length, 1 + 7)
+  assert.equal(lines.length, 1 + 8)
   assert.ok(lines.includes("gh label create 'pipeline:decide' --repo acme/app --color d93f0b --description 'A decision the pipeline needs from an owner'"))
   assert.ok(lines.includes("gh label create 'level:3' --repo acme/app --color b60205 --description 'Risk level 3'"))
   assert.deepEqual(f.calls, [])
@@ -151,7 +151,7 @@ test("the label lines survive a name with a quote in it", () => {
 
 test("the label names follow the config", () => {
   const names = neededLabels(config({ labels: { ...DEFAULTS.labels, work: "bot", level_prefix: "risk-" } })).map((l) => l.name)
-  assert.deepEqual(names, ["bot", "pipeline:decide", "pipeline:approved", "pipeline:redo", "pipeline:followup", "risk-0", "risk-1", "risk-2", "risk-3"])
+  assert.deepEqual(names, ["bot", "pipeline:decide", "pipeline:approved", "pipeline:redo", "pipeline:followup", "pipeline:board", "risk-0", "risk-1", "risk-2", "risk-3"])
   for (const l of neededLabels(config())) assert.match(l.color, /^[0-9a-f]{6}$/)
 })
 
@@ -180,7 +180,7 @@ test("labels that cannot be listed are a skip, with every line to run by hand", 
   const res = await run({}, fake({ over: { "labels?per_page=100": () => { throw forbidden() } } }).io)
   const r = one(res, "labels")
   assert.equal(r.state, "skip")
-  assert.equal(r.hint.split("\n").length, 1 + 9)
+  assert.equal(r.hint.split("\n").length, 1 + 10)
   assert.equal(res.ok, true, "what cannot be checked does not fail the run")
 })
 
@@ -204,24 +204,24 @@ test("the workflows are read from the configured base branch", async () => {
 })
 
 test("engine_ref different from the ref in uses: fails", async () => {
-  const over = { [wf("pipeline-fix.yml")]: content(caller("pipeline-fix.yml", (t) => t.replace("engine_ref: v0.2.0", "engine_ref: v0.3.0"))) }
+  const over = { [wf("pipeline-fix.yml")]: content(caller("pipeline-fix.yml", (t) => t.replace("engine_ref: v0.3.0", "engine_ref: v0.3.9"))) }
   const res = await run({}, fake({ over }).io)
   const r = one(res, "workflow.fix")
   assert.equal(r.state, "FAIL")
-  assert.equal(r.text, TEXT.callers.refMismatch("pipeline-fix.yml", "v0.2.0", "v0.3.0"))
+  assert.equal(r.text, TEXT.callers.refMismatch("pipeline-fix.yml", "v0.3.0", "v0.3.9"))
   assert.equal(res.ok, false)
 })
 
 test("three callers on different engine refs fail, listing each", async () => {
-  const over = { [wf("pipeline-tick.yml")]: content(caller("pipeline-tick.yml", (t) => t.replaceAll("v0.2.0", "v0.2.1"))) }
+  const over = { [wf("pipeline-tick.yml")]: content(caller("pipeline-tick.yml", (t) => t.replaceAll("v0.3.0", "v0.2.1"))) }
   const res = await run({}, fake({ over }).io)
   const r = one(res, "workflow.engine")
   assert.equal(r.state, "FAIL")
-  assert.match(r.text, /pipeline-tick\.yml: engine-org\/coteam-pipeline@v0\.2\.1; pipeline-fix\.yml: engine-org\/coteam-pipeline@v0\.2\.0/)
+  assert.match(r.text, /pipeline-tick\.yml: engine-org\/coteam-pipeline@v0\.2\.1; pipeline-fix\.yml: engine-org\/coteam-pipeline@v0\.3\.0/)
 })
 
 test("a branch as the engine ref warns; a tag or a full sha does not", async () => {
-  const all = (ref) => Object.fromEntries(CALLERS.map((c) => [wf(c.file), content(caller(c.file, (t) => t.replaceAll("v0.2.0", ref)))]))
+  const all = (ref) => Object.fromEntries(CALLERS.map((c) => [wf(c.file), content(caller(c.file, (t) => t.replaceAll("v0.3.0", ref)))]))
   const onMain = await run({}, fake({ over: all("main") }).io)
   assert.equal(one(onMain, "workflow.ref").state, "warn")
   assert.equal(onMain.ok, true)
@@ -258,8 +258,8 @@ test("secrets: inherit warns; a lost run-name, a lost dispatch trigger and an ex
 test("parseCaller reads the templates and is not fooled by comments", () => {
   for (const c of CALLERS) {
     const p = parseCaller(file(`templates/workflows/${c.file}`))
-    assert.deepEqual(p.uses, { repo: "Tinghecui/coteam-pipeline", reusable: c.reusable, ref: "v0.2.0" })
-    assert.equal(p.engineRef, "v0.2.0")
+    assert.deepEqual(p.uses, { repo: "Tinghecui/coteam-pipeline", reusable: c.reusable, ref: "v0.3.0" })
+    assert.equal(p.engineRef, "v0.3.0")
     assert.equal(p.inherit, false)
   }
   const p = parseCaller('# uses: a/b/.github/workflows/tick.yml@old\non: [push, workflow_dispatch]\njobs:\n  j:\n    uses: "x/y/.github/workflows/tick.yml@abc" # note\n    with:\n      engine_ref: "abc"\n    # secrets: inherit\n')
@@ -272,12 +272,12 @@ test("parseCaller reads the templates and is not fooled by comments", () => {
 })
 
 test("secrets and variables: missing names fail with the command; values are never asked for", async () => {
-  const f = fake({ over: { "actions/secrets?per_page=100": { secrets: [{ name: "PIPELINE_APP_KEY" }] }, "actions/variables?per_page=100": { variables: [] } } })
+  const f = fake({ over: { "actions/secrets?per_page=100": { secrets: [{ name: "ANTHROPIC_API_KEY" }] }, "actions/variables?per_page=100": { variables: [] } } })
   const res = await run({}, f.io)
   const s = one(res, "secrets")
   assert.equal(s.state, "FAIL")
-  assert.equal(s.text, TEXT.settings.missing("secrets", ["ANTHROPIC_API_KEY"]))
-  assert.match(s.hint, /^gh secret set ANTHROPIC_API_KEY --repo acme\/app/)
+  assert.equal(s.text, TEXT.settings.missing("secrets", ["PIPELINE_APP_KEY"]))
+  assert.match(s.hint, /^gh secret set PIPELINE_APP_KEY --repo acme\/app/)
   assert.equal(one(res, "variables").state, "FAIL")
   // PIPELINE_BOT is optional: a note that says what it is for, never a failure or a warning
   const bot = one(res, "variables.bot")
@@ -316,7 +316,43 @@ test("the pipeline's own login: reported when known, a warning when not; PIPELIN
 
 test("an organisation-level secret counts", async () => {
   const f = fake({ over: { "actions/secrets?per_page=100": { secrets: [{ name: "PIPELINE_APP_KEY" }] }, "actions/organization-secrets?per_page=100": { secrets: [{ name: "ANTHROPIC_API_KEY" }] } } })
-  assert.equal(one(await run({}, f.io), "secrets").state, "ok")
+  const res = await run({}, f.io)
+  assert.equal(one(res, "secrets").state, "ok")
+  assert.equal(one(res, "secrets.model").state, "ok")
+})
+
+test("the agent's credential: an API key or a subscription token, or the login of the agent's own machine", async () => {
+  const secrets = (...names) => ({ "actions/secrets?per_page=100": { secrets: [{ name: "PIPELINE_APP_KEY" }, ...names.map((name) => ({ name }))] } })
+  const vars = (value) => ({ "actions/variables?per_page=100": { variables: [{ name: "PIPELINE_APP_ID", value: "1" }, ...(value === undefined ? [] : [{ name: "PIPELINE_AGENT_RUNS_ON", value }])] } })
+  const none = await run({}, fake({ over: secrets() }).io)
+  assert.equal(one(none, "secrets.model").state, "FAIL")
+  assert.equal(one(none, "secrets.model").text, TEXT.model.missing)
+  assert.match(one(none, "secrets.model").hint, /claude setup-token`, then gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo acme\/app/)
+  // a caller from before v0.3.0: passes neither the token nor agent_runs_on
+  const old = Object.fromEntries(["pipeline-fix.yml", "pipeline-review.yml"].map((n) => [wf(n), content(caller(n, (t) => t.replace(/^.*(CLAUDE_CODE_OAUTH_TOKEN|agent_runs_on).*\n/gm, "")))]))
+  const token = await run({}, fake({ over: secrets("CLAUDE_CODE_OAUTH_TOKEN") }).io)
+  assert.equal(one(token, "secrets.model").text, "the agent's credential: CLAUDE_CODE_OAUTH_TOKEN")
+  assert.equal(of(token, "workflow.fix.secret").length, 0)
+  // the old callers do not pass the token: said, not failed
+  const oldToken = await run({}, fake({ over: { ...secrets("CLAUDE_CODE_OAUTH_TOKEN"), ...old } }).io)
+  assert.match(one(oldToken, "workflow.fix.secret").text, /CLAUDE_CODE_OAUTH_TOKEN is set but pipeline-fix\.yml does not pass it/)
+  assert.equal(one(oldToken, "workflow.fix.secret").state, "warn")
+  const both = await run({}, fake({ over: secrets("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") }).io)
+  assert.match(one(both, "secrets.model").text, /ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN \(the API key is the one used\)/)
+  // no secret, and the agent runs on a machine of the team's own: its login is used
+  const own = await run({}, fake({ over: { ...secrets(), ...vars('["self-hosted", "pipeline"]') } }).io)
+  assert.equal(one(own, "secrets.model").state, "info")
+  assert.equal(one(own, "runs_on").state, "info")
+  assert.match(one(own, "runs_on").text, /runs on \["self-hosted", "pipeline"\]/)
+  assert.equal(of(own, "workflow.review.runs_on").length, 0)
+  assert.equal(own.ok, true)
+  const oldOwn = await run({}, fake({ over: { ...secrets(), ...vars("self-hosted"), ...old } }).io)
+  assert.match(one(oldOwn, "workflow.review.runs_on").text, /does not pass it \(a caller from before v0\.3\.0\): the agent still runs on GitHub's machines/)
+  // a public repository and a self-hosted agent: refused by the engine, so failed here
+  const pub = await run({}, fake({ over: { ...secrets(), ...vars("self-hosted"), [`/repos/${REPO}`]: { private: false, allow_squash_merge: true } } }).io)
+  assert.equal(one(pub, "runs_on").state, "FAIL")
+  assert.match(one(pub, "runs_on").hint, /self_hosted\.allow_public: true/)
+  assert.equal(one(await run({}, fake({ over: { ...secrets("ANTHROPIC_API_KEY"), ...vars("[self-hosted") } }).io), "runs_on").state, "FAIL")
 })
 
 test("a token that may not list secrets or variables: cannot check, not a failure", async () => {
@@ -325,7 +361,8 @@ test("a token that may not list secrets or variables: cannot check, not a failur
   const res = await run({}, f.io)
   assert.equal(one(res, "secrets").state, "skip")
   assert.match(one(res, "secrets").text, /cannot check/)
-  assert.match(one(res, "secrets").hint, /PIPELINE_APP_KEY, ANTHROPIC_API_KEY/)
+  assert.match(one(res, "secrets").hint, /PIPELINE_APP_KEY/)
+  assert.equal(one(res, "secrets.model").state, "skip")
   assert.equal(one(res, "variables").state, "skip")
   assert.equal(of(res, "variables.bot").length, 0, "the variables could not be listed: nothing is said about PIPELINE_BOT")
   assert.equal(res.ok, true)

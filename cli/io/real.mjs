@@ -10,10 +10,11 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve, parse as parsePath } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadConfig, presetOf } from "../core/config.mjs"
-import { agentEnv, runClaude, SCRATCH_PATHS } from "./claude.mjs"
+import { agentEnv, BIN, runClaude, SCRATCH_PATHS } from "./claude.mjs"
 import { makeGh } from "./gh.mjs"
 import { makeGit } from "./git.mjs"
 import { makeLedger } from "./ledger-io.mjs"
+import { machineProblem } from "./machine.mjs"
 import { must, run, shell } from "./proc.mjs"
 
 // The engine's own checkout (prompts/, presets/: text, read before the agent starts).
@@ -179,7 +180,9 @@ export function loadRepoConfig({ git, home = HOME, base = "" }) {
 // credential); cwd: the user's repository checkout.
 // Also read: GITHUB_SERVER_URL (other than github.com), PIPELINE_REPO_URL (the git remote, for
 // trials against a local bare repository), PIPELINE_WORK_DIR (where agent transcripts go),
-// PIPELINE_BOT (more logins whose marks are believed; the pipeline's own is worked out).
+// PIPELINE_BOT (more logins whose marks are believed; the pipeline's own is worked out),
+// PIPELINE_CLAUDE_BIN (the agent CLI), PIPELINE_RUNNER_ENVIRONMENT and PIPELINE_REPO_PRIVATE
+// (where the job runs, whether the repository is private: cli/io/machine.mjs).
 // tolerateConfig (the doctor): a config that is missing or does not load is not an error;
 // io.config is then null and io.configError says why. Every other role fails right here.
 export function makeIo({ env = process.env, cwd = process.cwd(), log = (line) => console.log(line), tolerateConfig = false } = {}) {
@@ -201,9 +204,12 @@ export function makeIo({ env = process.env, cwd = process.cwd(), log = (line) =>
   const botLogin = botLoginSource({ env, token, gh, log })
 
   let workDir = env.PIPELINE_WORK_DIR || ""
+  // The agent CLI: "claude" on the PATH, or the one PIPELINE_CLAUDE_BIN names (a self-hosted
+  // runner sets it in its .env file when the CLI is somewhere else).
+  const bin = String(env.PIPELINE_CLAUDE_BIN || "").trim() || BIN
   const claude = (opts) => {
     workDir ||= mkdtempSync(join(tmp, "pipeline-work-"))
-    return runClaude(opts, { env, workDir, log })
+    return runClaude(opts, { env, workDir, log, bin })
   }
   claude.scratch = SCRATCH_PATHS
 
@@ -237,6 +243,8 @@ export function makeIo({ env = process.env, cwd = process.cwd(), log = (line) =>
       mkdtemp: (prefix) => mkdtempSync(join(tmp, prefix)),
     },
     claude,
+    // "" when the agent may run on this machine, otherwise why not (cli/io/machine.mjs).
+    machineProblem: () => machineProblem({ env, gh, config, run, bin }),
     ledger: makeLedger({ git: git(), url, log, label: `${env.GITHUB_WORKFLOW || "pipeline"} run ${env.GITHUB_RUN_ID || "0"}` }),
     // A random word for the delimiters around untrusted text in a prompt.
     nonce: () => randomBytes(6).toString("hex"),

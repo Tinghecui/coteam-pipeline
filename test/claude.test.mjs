@@ -197,3 +197,10 @@ test("runClaude refuses bad calls before starting anything", () => {
   assert.throws(() => runClaude({ prompt: "p", minutes: 1, tools: "all" }, {}), /workDir/)
   assert.throws(() => runClaude({ tag: "../x", prompt: "p", minutes: 1, tools: "all" }, { workDir: "/tmp/x" }), /bad tag/)
 })
+
+test("agentEnv: a model credential the workflow passed empty is not passed on (the CLI's own login is used)", () => {
+  assert.deepEqual(agentEnv({ PATH: "/bin", ANTHROPIC_API_KEY: "", CLAUDE_CODE_OAUTH_TOKEN: "t", HOME: "/home/r" }, {}), { PATH: "/bin", CLAUDE_CODE_OAUTH_TOKEN: "t", HOME: "/home/r" })
+  assert.deepEqual(agentEnv({ ANTHROPIC_API_KEY: "", CLAUDE_CODE_OAUTH_TOKEN: "" }, {}), {})
+  // an empty variable of another kind is left as it is
+  assert.deepEqual(agentEnv({ EDITOR: "" }, {}), { EDITOR: "" })
+})

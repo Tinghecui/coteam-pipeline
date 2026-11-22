@@ -185,3 +185,19 @@ test("countedRuns: the one count the tick and the executor share (issue, row, si
   assert.deepEqual(countedRuns(entries, { issue: 5, since: "2026-11-15T10:05:00Z" }).map((x) => x.at.slice(14, 16)), ["06"])
   assert.deepEqual(countedRuns(null, { issue: 5 }), [])
 })
+
+test("budget: limits.daily_runs counts the agents' runs today that really started, 0 = no limit", () => {
+  const at = (h) => `2026-11-15T0${h}:00:00Z`
+  const entries = [
+    { at: at(1), role: "executor", issue: 1, usd: 0, outcome: "pr" },
+    { at: at(2), role: "reviewer", pr: 4, usd: 0, outcome: "approve" },
+    { at: at(3), role: "executor", issue: 2, usd: 0, outcome: "unavailable", unavailable: "quota" },
+    { at: at(4), role: "executor", issue: 2, usd: 0, outcome: "skipped" },
+    { at: "2026-11-14T09:00:00Z", role: "executor", issue: 1, usd: 0, outcome: "pr" },
+  ]
+  const free = budget(entries, { issue: 3, limits, now })
+  assert.deepEqual([free.ok, free.runsToday], [true, 2])
+  const stop = budget(entries, { issue: 3, limits: { ...limits, daily_runs: 2 }, now })
+  assert.deepEqual([stop.ok, stop.capped, stop.reason], [false, false, "the agents have run 2 times today (UTC 2026-11-15), the daily limit is 2 (limits.daily_runs)"])
+  assert.equal(budget(entries, { issue: 3, limits: { ...limits, daily_runs: 3 }, now }).ok, true)
+})

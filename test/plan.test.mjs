@@ -1187,6 +1187,8 @@ test("board: every open pipeline PR and every work issue has one line saying whe
   // PRs first, then issues, each by number
   assert.deepEqual(p.board.map((e) => e.pr || `#${e.issue}`), [40, 41, 42, 43, 44, "#1", "#2", "#3", "#4", "#5", "#6"])
   assert.equal(p.board.find((e) => !e.pr && e.issue === 2).inPr, 40)
+  assert.equal(p.board.find((e) => !e.pr && e.issue === 3).title, "Task 3")
+  assert.equal(p.board.find((e) => e.pr === 40).title, "Task 2", "a pull request is named by its issue")
   assert.equal(p.held, "")
 })
 

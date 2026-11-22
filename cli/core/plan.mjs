@@ -997,6 +997,10 @@ export function planTick(state, config, now = new Date()) {
     show(`issue:${c.issue}`, { issue: c.issue, row: c.row, state: "working", text: B.started })
     plan.dispatchFix.push({ ...c, actions: [{ do: "dispatch", workflow: FIX_WORKFLOW, inputs: { issue: String(c.issue), row: c.row ? String(c.row) : "", pr: "" } }] })
   }
-  plan.board = [...board.values()].sort((a, b) => (a.pr ? 0 : 1) - (b.pr ? 0 : 1) || (a.pr || a.issue) - (b.pr || b.issue))
+  // The title of the issue (a pull request's own, when its issue is not open) says what it is.
+  const titles = new Map((state.issues || []).map((i) => [`issue:${i.number}`, i.title]))
+  for (const p of state.prs || []) titles.set(`pr:${p.number}`, p.title)
+  const titleOf = (e) => titles.get(`issue:${e.issue}`) || (e.pr && titles.get(`pr:${e.pr}`)) || ""
+  plan.board = [...board.values()].map((e) => ({ ...e, title: titleOf(e) })).sort((a, b) => (a.pr ? 0 : 1) - (b.pr ? 0 : 1) || (a.pr || a.issue) - (b.pr || b.issue))
   return plan
 }

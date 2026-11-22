@@ -175,9 +175,9 @@ test("one round, end to end: reads the state, carries the plan out in a safe ord
   const board = by("issues")[1].body
   assert.equal(board.title, "Pipeline status")
   assert.deepEqual(board.labels, ["pipeline:board"])
-  assert.match(board.body, /PR #43 \(#5\) \| waits for an owner: a decision item is opened now/)
-  assert.match(board.body, /PR #42 \(#4\) \| the review is dispatched now/)
-  assert.match(board.body, /#1 \| the executor is dispatched now/)
+  assert.match(board.body, /PR #43 \(#5\)[^|]* \| waits for an owner: a decision item is opened now/)
+  assert.match(board.body, /PR #42 \(#4\)[^|]* \| the review is dispatched now/)
+  assert.match(board.body, /\| #1[^|]* \| the executor is dispatched now/)
   assert.equal(res.board, "created")
 })
 
@@ -508,7 +508,7 @@ test("status: the board the next round would write, printed, nothing written", a
   const res = await status({}, s.io)
   assert.deepEqual(s.calls, [])
   assert.match(res.body, /^<!-- coteam-pipeline:board v1 -->\n# Pipeline status/)
-  assert.match(s.lines.join("\n"), /PR #44 \(#7\) \| approved; merged now \(released by @ann\)/)
+  assert.match(s.lines.join("\n"), /PR #44 \(#7\)[^|]* \| approved; merged now \(released by @ann\)/)
   const j = fakeIo(world())
   await status({ json: true }, j.io)
   const parsed = JSON.parse(j.lines[0])

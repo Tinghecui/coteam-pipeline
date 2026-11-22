@@ -26,9 +26,10 @@ const ICON = { owner: "🙋", stuck: "⛔", working: "🔧", merging: "✅", que
 const cell = (s) => String(s ?? "").replace(/\r?\n/g, " ").replace(/\|/g, "\\|")
 const money = (n) => `$${(Math.round(Number(n || 0) * 100) / 100).toFixed(2)}`
 
+const short = (t) => (t.length > 80 ? `${t.slice(0, 79)}…` : t)
 function what(e) {
-  if (e.pr) return TEXT.pr(e.pr, e.issue, e.row)
-  return TEXT.issue(e.issue, e.row)
+  const where = e.pr ? TEXT.pr(e.pr, e.issue, e.row) : TEXT.issue(e.issue, e.row)
+  return e.title ? `${where} ${short(e.title)}` : where
 }
 
 export function renderBoard({ plan, config, now = new Date(), runUrl = "", failures = 0 }) {

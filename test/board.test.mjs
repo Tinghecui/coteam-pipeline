@@ -63,3 +63,21 @@ test("board: the same board with another time stamp, run or notes is the same; a
   assert.ok(!sameBoard(a, renderBoard({ plan: { ...plan, spentToday: 1 }, config, now })))
   assert.ok(!sameBoard("", a))
 })
+
+test("board: each line names its issue's title, shortened, with pipes escaped", () => {
+  const long = "x".repeat(100)
+  const body = renderBoard({
+    plan: planWith({
+      board: [
+        { pr: 40, issue: 2, row: 0, state: "working", text: "reviewing", title: "Add a | b" },
+        { issue: 3, row: 0, state: "queued", text: "waits", title: long },
+        { issue: 4, row: 0, state: "idle", text: "nothing" },
+      ],
+    }),
+    config,
+    now,
+  })
+  assert.match(body, /\| PR #40 \(#2\) Add a \\\| b \| reviewing \|/)
+  assert.ok(body.includes(`| #3 ${"x".repeat(79)}… | waits |`))
+  assert.match(body, /\| #4 \| nothing \|/)
+})

@@ -156,7 +156,7 @@ function fakeGh() {
       'echo "$*" >> "$FAKE_GH_LOG"',
       '[ "$GH_TOKEN" = "bot-token-for-test" ] || echo "no-token" >> "$FAKE_GH_LOG"',
       "if [ -r /proc/$PPID/environ ] && tr '\\0' '\\n' < /proc/$PPID/environ | grep -q '^PIPELINE_TOKEN='; then echo exposed >> \"$FAKE_GH_LOG\"; fi",
-      'case "$*" in *--slurp*) echo "[[]]" ;; *) echo "{}" ;; esac',
+      'case "$*" in *--paginate*) echo "[]" ;; *) echo "{}" ;; esac',
       "",
     ].join("\n"),
   )
@@ -178,7 +178,7 @@ test("doctor: runs the installation check (cli/roles/doctor.mjs) with --fix pass
   assert.ok(!r.stdout.includes("{\"ok\""), "the doctor prints its lines, not a JSON summary")
   assert.ok(!(r.stdout + r.stderr).includes("bot-token-for-test"))
   const asked = gh.read()
-  assert.match(asked, /^api --paginate --slurp repos\/o\/r\/labels\?per_page=100$/m)
+  assert.match(asked, /^api --paginate repos\/o\/r\/labels\?per_page=100$/m)
   assert.ok(!/-X (POST|PATCH|PUT|DELETE)/.test(asked), asked)
   assert.ok(!asked.includes("no-token"), "gh is given the token in its own environment")
   if (typeof process.execve === "function" && process.platform === "linux") {
